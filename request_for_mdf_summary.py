@@ -7,6 +7,8 @@ from database.arangodb import NEBULA_DB
 from typing import NamedTuple
 from nebula3_experiments.prompts_utils import *
 import time
+from nebula3_experiments.vg_eval import VGEvaluation
+
 os.environ["TRANSFORMERS_CACHE"] = "/storage/hft_cache"
 os.environ["TORCH_HOME"] = "/storage/torch_cache"
 os.environ["CONFIG_NAME"] = "giltest"
@@ -162,12 +164,14 @@ def process_benchmark(benchmark_name, **kwargs):
 result_path = "/notebooks/nebula3_playground"
 unique_run_name = str(int(time.time()))
 prompting_type = 'few_shot' #'zeroshot'
-
-
+evaluator = VGEvaluation()
+add_action = True
 
 results = list()
 all_movie_id = list()
 # all_movie_id.append('Movies/-7183176057624492662') # bad quality, bad ReID for indoor based summarization
+if add_action:
+    all_movie_id.append('Movies/7023181708619934815')
 all_movie_id.append('Movies/-6372550222147686303')
 all_movie_id.append('Movies/-6576299517238034659')
 all_movie_id.append('Movies/889658032723458366')
@@ -176,8 +180,8 @@ all_movie_id.append('Movies/2219594956981209558')
 all_movie_id.append('Movies/6293447408186786707')
 # all_movie_id.append('Movies/7417592353856606351') # used for one-shot
 
-man_names = ['James', 'Michael', 'Tom', 'George' ,'Nicolas', 'John']
-woman_names = ['Susan', 'Jennifer', 'Eileen', 'Sandra', 'Emma']
+man_names = list(np.unique(['James', 'Michael', 'Tom', 'George' ,'Nicolas', 'John', 'daniel', 'Henry', 'Jack', 'Leo', 'Oliver']))
+woman_names = list(np.unique(['Susan', 'Jennifer', 'Eileen', 'Sandra', 'Emma', 'Charlotte', 'Mia']))
 
 places = 'indoor'
 print("promting_type", prompting_type)
@@ -226,10 +230,35 @@ for movie_id in all_movie_id:
         scene = obj['global_scenes']['blip'][0][0]
         all_scene.append(scene)
     uniq_places, cnt = np.unique(all_scene, return_counts=True)
-    scene_majority = uniq_places[np.argmax(cnt)] # take most frequent place
-    is_indoor = any([True if x in  scene_majority else False for x in ['lab', 'room', 'store', 'indoor', 'office', 'motel', 'home', 'house', 'bar', 'kitchen']])    #https://github.com/zhoubolei/places_devkit/blob/master/categories_places365.txt
+    n_scenes_by_length = 1+int(len(mdf_no)/50)
+    # scene_top_k_frequent = uniq_places[np.argmax(cnt)] # take most frequent place
+    scene_top_k_frequent = uniq_places[np.argsort(cnt)[::-1]][:n_scenes_by_length] 
+    frequent_uniq_places = uniq_places[np.argsort(cnt)[::-1]]
+    similarity_places = evaluator.compute_triplet_scores(src=[tuple([x]) for x in frequent_uniq_places], dst = [tuple([x]) for x in frequent_uniq_places])
+    
+    topk = 10
+    np.fill_diagonal(similarity_places, 0)
+    places_sim_th = 0.7
+    simillar_places = list()
+    for ix, ele in enumerate(similarity_places):
+        if any(similarity_places[ix:, ix]>places_sim_th): # lower diagonal simillar ones will be removed 
+            # print(frequent_uniq_places, similarity_places[:ix, ix])
+            removed_places = frequent_uniq_places[np.where(similarity_places[ix:, ix]>places_sim_th)[0]+ix]
+            # print(removed_places, ix)
+            print("{} Like {} ".format(removed_places, frequent_uniq_places[ix]))
+            simillar_places.extend(removed_places)
+    
+    simillar_places = [x.strip() for x in simillar_places]
+    simillar_places = np.unique(simillar_places)
+    g = list(frequent_uniq_places)
+    [g.remove(x) for x in simillar_places]
+    top_k_uniq_not_sim = g[:topk]
+
+
+    is_indoor = any([True if x in  scene_top_k_frequent else False for x in ['lab', 'room', 'store', 'indoor', 'office', 'motel', 'home', 'house', 'bar', 'kitchen']])    #https://github.com/zhoubolei/places_devkit/blob/master/categories_places365.txt
     if is_indoor:
         reid = True
+    scene_top_k_frequent = ' and or '.join(list(scene_top_k_frequent))
 
     for ix, frame_num in enumerate(mdf_no):
             
@@ -245,7 +274,7 @@ for movie_id in all_movie_id:
         mdf_re_id_dict = [x  for x in rc_reid['frames'] if x['frame_num']==frame_num]
         if len(mdf_re_id_dict) >1:
             print('ka')
-        if mdf_re_id_dict and is_indoor: #places == 'indoor':  # conditioned on man in the scene if places==indoor
+        if mdf_re_id_dict: #and is_indoor: #places == 'indoor':  # conditioned on man in the scene if places==indoor
             reid = True
             assert(mdf_re_id_dict[0]['frame_num'] == frame_num)
             for id_rec in mdf_re_id_dict: # match many2many girl lady, woman to IDs at first
@@ -265,7 +294,7 @@ for movie_id in all_movie_id:
                     is_male = list(compress(male_str, [caption.find(x)>0 for x in male_str]))
                     is_female = list(compress(female_str, [caption.find(x)>0 for x in female_str]))
 
-                    if len(ids_n) > 1:
+                    if len(ids_n) > 1 or 1:
                         if 'men' in caption:
                             ids_phrase = ', ' + ' and '.join([man_names[ids['id']] for ids in ids_n]) + ', '
                             caption_re_id = caption.replace('men', 'men' + ids_phrase) 
@@ -278,46 +307,48 @@ for movie_id in all_movie_id:
                             ids_phrase = ', ' + ' and '.join([man_names[ids['id']] for ids in ids_n]) + ', '
                             caption_re_id = caption.replace('person', 'person' + ids_phrase)
                             llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('person', 'person'  +ids_phrase)
-                        else:
-                            print('Warning Multiple Ids were found but were not associated !!!!')
-
-                    elif len(ids_n) == 1:
-                        ids = id_rec['re-id'][0]
+                        # else:
+                        #     print('Warning Multiple Ids were found but were not associated !!!!')
+                    # Reduction when many Ids but only 1 ReID or single ID keyword/str " men in... one man"
+                    if 1:
+                        ids = id_rec['re-id'][0]  # TODO take the relavant Gender based ID out of the IDs in the MDF
+                    # elif len(ids_n) == 1:
+                        # ids = id_rec['re-id'][0]
                         if 'woman' in caption:
                             if 'a woman' in caption :                    
-                                caption_re_id = caption.lower().replace('a woman', woman_names[ids['id']])
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a woman', woman_names[ids['id']])
+                                caption_re_id = caption.lower().replace('a woman', woman_names[ids['id']], 1)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a woman', woman_names[ids['id']])
                             else:
-                                caption_re_id = caption.lower().replace('woman', woman_names[ids['id']])
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('woman', woman_names[ids['id']])
+                                caption_re_id = caption.lower().replace('woman', woman_names[ids['id']], 1)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('woman', woman_names[ids['id']])
                         elif 'lady' in caption:
                             if 'a lady' in caption:
-                                caption_re_id = caption.lower().replace('a lady', woman_names[ids['id']])
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a lady', woman_names[ids['id']])
+                                caption_re_id = caption.lower().replace('a lady', woman_names[ids['id']], 1)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a lady', woman_names[ids['id']])
                             else:
-                                caption_re_id = caption.lower().replace('lady', woman_names[ids['id']])
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('lady', woman_names[ids['id']])
+                                caption_re_id = caption.lower().replace('lady', woman_names[ids['id']], 1)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('lady', woman_names[ids['id']])
                         elif 'girl' in caption:
                             if 'a girl' in caption:
-                                caption_re_id = caption.lower().replace('a girl', woman_names[ids['id']])
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a girl', woman_names[ids['id']])
+                                caption_re_id = caption.lower().replace('a girl', woman_names[ids['id']], 1)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a girl', woman_names[ids['id']])
                             else:
-                                caption_re_id = caption.replace('girl', woman_names[ids['id']])
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('girl', woman_names[ids['id']])
+                                caption_re_id = caption.replace('girl', woman_names[ids['id']], 1)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('girl', woman_names[ids['id']])
                         elif 'man' in caption:
                             if 'a man' in caption:
-                                caption_re_id = caption.lower().replace('a man', man_names[ids['id']])
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a man', woman_names[ids['id']])
+                                caption_re_id = caption.lower().replace('a man', man_names[ids['id']], 1)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a man', man_names[ids['id']], 1)# TODO the obj_LLM_OUTPUT_COLLECTION_cand can chnage the a man to the man 
                             else:
-                                caption_re_id = caption.replace('man', man_names[ids['id']])
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('man', woman_names[ids['id']])
+                                caption_re_id = caption.replace('man', man_names[ids['id']], 1)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('man', man_names[ids['id']])
                         elif 'boy' in caption:
                             if 'a boy' in caption:
-                                caption_re_id = caption.lower().replace('a boy', man_names[ids['id']])
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a boy', woman_names[ids['id']])
+                                caption_re_id = caption.lower().replace('a boy', man_names[ids['id']], 1)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a boy', man_names[ids['id']])
                             else:
-                                caption_re_id = caption.replace('boy', man_names[ids['id']])
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('boy', woman_names[ids['id']])
+                                caption_re_id = caption.replace('boy', man_names[ids['id']], 1)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('boy', man_names[ids['id']])
                         # elif 'person' in caption:
                         #     if 'a person' in caption:
                         #         caption_re_id = caption.lower().replace('a person', man_names[ids['id']])
@@ -327,31 +358,31 @@ for movie_id in all_movie_id:
                         #         llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('person', woman_names[ids['id']])
                         elif 'person' in caption:
                             if 'a person' in caption:
-                                caption_re_id = caption.lower().replace('a person', man_names[ids['id']])
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a person', woman_names[ids['id']])
+                                caption_re_id = caption.lower().replace('a person', man_names[ids['id']], 1)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a person', man_names[ids['id']])
                             else:
-                                caption_re_id = caption.replace('person', man_names[ids['id']])
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('person', woman_names[ids['id']])
+                                caption_re_id = caption.replace('person', man_names[ids['id']], 1)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('person', man_names[ids['id']])
                         elif 'human' in caption:
                             if 'a human' in caption:
-                                caption_re_id = caption.lower().replace('a human', man_names[ids['id']])
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a human', woman_names[ids['id']])
+                                caption_re_id = caption.lower().replace('a human', man_names[ids['id']], 1)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a human', man_names[ids['id']])
                             else:
-                                caption_re_id = caption.lower().replace('human', man_names[ids['id']])
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('human', woman_names[ids['id']])
+                                caption_re_id = caption.lower().replace('human', man_names[ids['id']], 1)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('human', man_names[ids['id']])
                         else:
                             print('Warning Id was found but was not associated n IDS: {} !!!! Caption: {} movie name: {}'.format(len(ids_n), caption, movie_name))
                     
                     
             all_reid_caption.append(caption_re_id)
-            all_caption.append(caption)
-            all_obj_LLM_OUTPUT_COLLECTION_cand_re_id.append(llm_out_cand_re_id)
+            # all_caption.append(caption)
+            # all_obj_LLM_OUTPUT_COLLECTION_cand_re_id.append(llm_out_cand_re_id)
         else:
-            all_caption.append(caption)
+            all_reid_caption.append(caption)
     # obj = nebula_db.get_movie_frame_from_collection(mid,LLM_OUTPUT_COLLECTION)
         # get_dialog_caption(mid.movie_id,mid.frame_num)
     # uniq_places, cnt = np.unique(all_scene, return_counts=True)
-    # scene_majority = uniq_places[np.argmax(cnt)] # take most frequent place
+    # scene_top_k_frequent = uniq_places[np.argmax(cnt)] # take most frequent place
 
     if all_reid_caption:
         seq_caption = ' and then '.join(all_reid_caption)
@@ -374,25 +405,25 @@ for movie_id in all_movie_id:
             prompt = "What is the theme of the following video scene given captions separated by the word 'then':{} Summary :".format(seq_caption)
             prompt = "Summarize the captions out of a video scene separated by the word 'then':{} Summary :".format(seq_caption)
         elif 1:
-            prompt = "Summarize the video scene by the shot captions separated by the word 'then', the scene is at the {} :{} Summary :".format(scene_majority, seq_caption)
-            prompt = "Summarize the video shots taken at the {} separated by the word 'then' :{} Summary :".format(scene_majority, seq_caption)
-            prompt = "Summarize the video that was taken at the {} by 2-3 sentences. The video shots are separated by the word 'then' :{} Summary :".format(scene_majority, seq_caption)
-            prompt = "Summarize the video that was taken at the place of {} by 2-3 sentences. The video shots are separated by the word 'then'. Start by telling how many persons and what place  :{} Summary :".format(scene_majority, seq_caption)
-            prompt = '''Summary, by only few sentences, the video that was taken place at {} with {} persons. The video shots are separated by the word 'then'. Start by telling how many persons and what place  : {}. Summary :'''.format(scene_majority, n_uniq_ids, seq_caption)
-            prompt = '''Summarize the video given the captions that were taken place at {} with {} persons. Start by telling how many persons and what place : {} Summary :'''.format(scene_majority, n_uniq_ids, seq_caption_w_caption)
+            prompt = "Summarize the video scene by the shot captions separated by the word 'then', the scene is at the {} :{} Summary :".format(scene_top_k_frequent, seq_caption)
+            prompt = "Summarize the video shots taken at the {} separated by the word 'then' :{} Summary :".format(scene_top_k_frequent, seq_caption)
+            prompt = "Summarize the video that was taken at the {} by 2-3 sentences. The video shots are separated by the word 'then' :{} Summary :".format(scene_top_k_frequent, seq_caption)
+            prompt = "Summarize the video that was taken at the place of {} by 2-3 sentences. The video shots are separated by the word 'then'. Start by telling how many persons and what place  :{} Summary :".format(scene_top_k_frequent, seq_caption)
+            prompt = '''Summary, by only few sentences, the video that was taken place at {} with {} persons. The video shots are separated by the word 'then'. Start by telling how many persons and what place  : {}. Summary :'''.format(scene_top_k_frequent, n_uniq_ids, seq_caption)
+            prompt = '''Summarize the video given the captions that were taken place at {} with {} persons. Start by telling how many persons and what place : {} Summary :'''.format(scene_top_k_frequent, n_uniq_ids, seq_caption_w_caption)
             
             if 0:
             # Dense caption
-                prompt = '''Summarize the video given the captions that were taken place at {} with {} persons. Start by telling how many persons and what place : {} Summary :'''.format(scene_majority, n_uniq_ids, seq_dense_caption_w_caption)
+                prompt = '''Summarize the video given the captions that were taken place at {} with {} persons. Start by telling how many persons and what place : {} Summary :'''.format(scene_top_k_frequent, n_uniq_ids, seq_dense_caption_w_caption)
     # 'Summarize the video scene given the shots that were taken place at storage room with 3 persons. The video shot captions are separated by the word 'then'. Start by telling how many persons and where it was taken place  :'        
 
         else:
             prompt = "Give a concise summary of the following video scene captions separated by the word 'then':{} Summary :".format(seq_caption)
     elif prompting_type == 'few_shot':
-        prompt_prefix_caption = get_few_shot_prompt_paragraph_based_to_tuple_4K(seq_caption_w_caption, scene_majority, n_uniq_ids, 
+        prompt_prefix_caption = get_few_shot_prompt_paragraph_based_to_tuple_4K(seq_caption_w_caption, scene_top_k_frequent, n_uniq_ids, 
                                                 in_context_examples=one_shot_context_ex_prefix_caption, few_shot_seperator = '''###''',
                                                 prolog_refine=', by 2-3 sentences, ')
-        prompt_prefix_then = get_few_shot_prompt_paragraph_based_to_tuple_4K(seq_caption, scene_majority, n_uniq_ids, 
+        prompt_prefix_then = get_few_shot_prompt_paragraph_based_to_tuple_4K(seq_caption, scene_top_k_frequent, n_uniq_ids, 
                                                     in_context_examples=one_shot_context_ex_prefix_then, few_shot_seperator = '''###''',
                                                     prolog_refine=', by 2-3 sentences, ')
         
