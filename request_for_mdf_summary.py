@@ -8,6 +8,7 @@ from typing import NamedTuple
 from nebula3_experiments.prompts_utils import *
 import time
 from nebula3_experiments.vg_eval import VGEvaluation
+from typing import Union
 
 os.environ["TRANSFORMERS_CACHE"] = "/storage/hft_cache"
 os.environ["TORCH_HOME"] = "/storage/torch_cache"
@@ -35,7 +36,7 @@ import requests
 import importlib
 print(importlib.metadata.version('openai'))
 
-def semantic_similar_places_max_set_cover(tokens, topk=10, greedy=True):
+def semantic_similar_places_max_set_cover(tokens: list, topk=10, greedy=True) -> str:
     uniq_places, cnt = np.unique(tokens, return_counts=True)
     frequent_uniq_places = uniq_places[np.argsort(cnt)[::-1]] # sort according to frequency
     # SentenceBERT score
@@ -59,7 +60,7 @@ def semantic_similar_places_max_set_cover(tokens, topk=10, greedy=True):
     return max_set_entity
 
 #topk == -1 then no additional top k 
-def merge_semantic_similar_tokens(tokens, topk=10, sim_th=0.7, verbose=False):
+def merge_semantic_similar_tokens(tokens: list, topk=10, sim_th=0.7, verbose=False) -> str:
     uniq_places, cnt = np.unique(tokens, return_counts=True)
     frequent_uniq_places = uniq_places[np.argsort(cnt)[::-1]] # sort according to frequency
     # SentenceBERT score
@@ -96,6 +97,8 @@ class LLMBase(ABC):
 # pip install openai==0.27.0 --target /notebooks/pip_install/
 
 # Movies/7417592353856606351
+#subsequent captions of key-frames 1 ### 2 
+one_shot_context_ex_prefix_summary = '''Video Summary: 3 persons, in a room, Susan, Michael, & Tom. They look strange, Tom with a giant head, michael with a mask, one of them is giant. The three people appear very tense as they look around frantically. '''
 one_shot_context_ex_prefix_caption = '''Caption 1: Susan standing in front of a tv screen with a camera. 
                             Caption 2: Michael with a body in the middle of the screen. 
                             Caption 3: Tom standing next to a giant human in the shape of a human. 
@@ -108,11 +111,11 @@ one_shot_context_ex_prefix_caption = '''Caption 1: Susan standing in front of a 
                             Caption 10: Michael in a suit with the capt that says, i'm. 
                             Caption 11: Tom in a spider suit sitting on a train car. 
                             Caption 12: Tom in a blue shirt and Tom in a black shirt. 
-                            Caption 13: Susan standing in front of a bookcase with a bookcase in the background. 
-                            Video Summary: 3 persons in storage room, Susan, Michael, & Tom are all present inside a small dark room filled with boxes stacked up against one wall. The three people appear very tense as they look around frantically.'''
+                            Caption 13: Susan standing in front of a bookcase with a bookcase in the background. {}.'''.format(one_shot_context_ex_prefix_summary)
+
 one_shot_context_ex_prefix_caption = one_shot_context_ex_prefix_caption.replace('\n ',' ').replace("  ", "")
 
-one_shot_context_ex_prefix_then = '''Susan standing in front of a tv screen with a camera and then Michael with a body in the middle of the screen and then Tom standing next to a giant human in the shape of a human and then Susan standing in front of a camera and looking at the camera and then Susan in a blue dress and a man in a suit and then Susan in a room with a bike in the background and then Tom sitting on a chair in the middle of a room and then Michael with a mask on his face and Michael with a mask on his and then Tom in a suit and tie with a giant head and then Michael in a suit with the capt that says,'i'm ' and then Tom in a spider suit sitting on a train car and then Tom in a blue shirt and Tom in a black shirt and then Susan standing in front of a bookcase with a bookcase in the background.'''
+one_shot_context_ex_prefix_then = '''Susan standing in front of a tv screen with a camera and then Michael with a body in the middle of the screen and then Tom standing next to a giant human in the shape of a human and then Susan standing in front of a camera and looking at the camera and then Susan in a blue dress and a man in a suit and then Susan in a room with a bike in the background and then Tom sitting on a chair in the middle of a room and then Michael with a mask on his face and Michael with a mask on his and then Tom in a suit and tie with a giant head and then Michael in a suit with the capt that says,'i'm ' and then Tom in a spider suit sitting on a train car and then Tom in a blue shirt and Tom in a black shirt and then Susan standing in front of a bookcase with a bookcase in the background. {}.'''.format(one_shot_context_ex_prefix_summary)
 
 def get_few_shot_prompt_paragraph_based_to_tuple_4K(query_paragraph: str, scene: str, n_uniq_ids: int, 
                                                     in_context_examples: str, **kwargs):
@@ -122,21 +125,21 @@ def get_few_shot_prompt_paragraph_based_to_tuple_4K(query_paragraph: str, scene:
     
     # prolog = '''Summarize the video given the captions that were taken place at {} with {} persons. Start by telling how many persons and what place. Example: Video captions '''
 
-
+# Alternatives TODO HK@@ : Provide a summary for the following article  ; move the "that were taken place at {}" to the end of prompt ask for action
     if uniq_id_prior_put_in_caption_end:
         prolog = '''Summarize the video {}given the captions that were taken place at {}. Example of video captions and summary: '''
         prolog = prolog.format(prolog_refine, scene)
     else:
         if n_uniq_ids > 0:
-            prolog = '''Summarize the video {}given the captions that were taken place at {} with {} persons. Example of video captions and summary: '''
+            prolog = '''Summarize the video {}given the captions that were taken place at {} with {} persons. Tell what they are doing. Example of video captions and summary: '''
             prolog = prolog.format(prolog_refine, scene, n_uniq_ids)
         else:
-            prolog = '''Summarize the video {}given the captions that were taken place at {}. Example of video captions and summary: '''
+            prolog = '''Summarize the video {}given the captions that were taken place at {}. Tell what they are doing. Example of video captions and summary: '''
             prolog = prolog.format(prolog_refine, scene)
 
     if uniq_id_prior_put_in_caption_end:
-        epilog = '''Video captions: {} {}. Video Summary: '''
-        suffix_prior = '''the captions are noisy and sometimes include people who are not there. We know for certain there are exactly {} people in the scene'''.format(n_uniq_ids)
+        epilog = '''Video captions: {}{}. Video Summary: '''
+        suffix_prior = '''. The captions are noisy and sometimes include people who are not there. We know for certain there are exactly {} main characters in the scene. Tell what they are doing'''.format(n_uniq_ids)
         epilog = epilog.format(query_paragraph, suffix_prior)
     else:
         epilog = '''Video captions: {}. Video Summary: '''
@@ -144,7 +147,7 @@ def get_few_shot_prompt_paragraph_based_to_tuple_4K(query_paragraph: str, scene:
 
     if few_shot_seperator:
         in_context_examples = in_context_examples  + '\n{}\n' .format(few_shot_seperator)   #
-    prompt = '{} {} {}'.format(prolog, in_context_examples, epilog).strip()
+    prompt = '{}{}{}'.format(prolog, in_context_examples, epilog).strip()
 
     print(prompt)
     return prompt
@@ -229,12 +232,17 @@ def process_benchmark(benchmark_name, **kwargs):
 result_path = "/notebooks/nebula3_playground"
 unique_run_name = str(int(time.time()))
 prompting_type = 'few_shot' #'zeroshot'
-evaluator = VGEvaluation()
+if 1:
+    evaluator = VGEvaluation()
+else:
+    evaluator = None
 add_action = True
 
 results = list()
 all_movie_id = list()
 # all_movie_id.append('Movies/-7183176057624492662') # bad quality, bad ReID for indoor based summarization
+# if 1:
+#     all_movie_id.append('Movies/7417592353856606351')
 if add_action:
     all_movie_id.append('Movies/7023181708619934815')
 all_movie_id.append('Movies/-6372550222147686303')
@@ -249,7 +257,7 @@ man_names = list(np.unique(['James', 'Michael', 'Tom', 'George' ,'Nicolas', 'Joh
 woman_names = list(np.unique(['Susan', 'Jennifer', 'Eileen', 'Sandra', 'Emma', 'Charlotte', 'Mia']))
 
 places = 'indoor'
-top_k_per_mdf = 10
+top_k_per_mdf = 1
 print("promting_type", prompting_type)
 
 
@@ -276,7 +284,8 @@ for movie_id in all_movie_id:
     all_obj_LLM_OUTPUT_COLLECTION_cand = list()
     all_obj_LLM_OUTPUT_COLLECTION_cand_re_id = list()
     # cusrsor = nebula_db.get_doc_by_key2({'movie_id': movie_id}, MOVIES_COLLECTION)
-    rc_movie_id = nebula_db.get_doc_by_key({'_id': movie_id}, MOVIES_COLLECTION)
+    rc_movie_id = nebula_db.get_doc_by_key({'_id': movie_id}, MOVIES_COLLECTION) # + scene_elements
+    scene_elements = rc_movie_id['scene_elements']
     movie_name = os.path.basename(rc_movie_id['url_path'])
     rc_reid = nebula_db.get_doc_by_key({'movie_id': movie_id}, REID_CLUES_COLLECTION)
     # rc['mdfs']
@@ -289,24 +298,48 @@ for movie_id in all_movie_id:
     if movie_id == 'Movies/-6372550222147686303':
         frame_boundary = [834, 1181]
         mdf_no = mdf_no[np.where(np.array(mdf_no) == frame_boundary[0])[0][0] :1 + np.where(np.array(mdf_no) == frame_boundary[1])[0][0]]
+    if movie_id == 'Movies/-5723319113316714990':
+        frame_boundary = [197, 320]
+        mdf_no = mdf_no[np.where(np.array(mdf_no) == frame_boundary[0])[0][0] :1 + np.where(np.array(mdf_no) == frame_boundary[1])[0][0]]
+    if movie_id == 'Movies/6293447408186786707':
+        frame_boundary = [1035, 1290]
+        mdf_no = mdf_no[np.where(np.array(mdf_no) == frame_boundary[0])[0][0] :1 + np.where(np.array(mdf_no) == frame_boundary[1])[0][0]]
+
     # Place voting
+    place_per_scene_elements = dict()
     for ix, frame_num in enumerate(mdf_no):
+        # TODO per SE clustering 
         mid = MovieImageId(movie_id=movie_id, frame_num=frame_num)
         obj = nebula_db.get_movie_frame_from_collection(mid, VISUAL_CLUES_COLLECTION)
         scene = [obj['global_scenes']['blip'][x][0] for x in range(len(obj['global_scenes']['blip']))][:top_k_per_mdf]
-        print([obj['global_scenes']['blip'][x] for x in range(len(obj['global_scenes']['blip']))][:1])
+        # print([obj['global_scenes']['blip'][x] for x in range(len(obj['global_scenes']['blip']))][:1])
         all_scene.append(scene)
+        scene_boundary = [x for x in scene_elements if (frame_num >= x[0] and frame_num < x[1])][0]
+        if str(scene_boundary) in place_per_scene_elements:
+            place_per_scene_elements[str(scene_boundary)].extend(scene)
+        else:
+            place_per_scene_elements[str(scene_boundary)] = scene
+    all_scene = flatten(all_scene)
     uniq_places, cnt = np.unique(all_scene, return_counts=True)
     n_scenes_by_length = 1+int(len(mdf_no)/50)
     # scene_top_k_frequent = uniq_places[np.argmax(cnt)] # take most frequent place
     scene_top_k_frequent = uniq_places[np.argsort(cnt)[::-1]][:n_scenes_by_length] 
-
-    semantic_similar_places_max_set = semantic_similar_places_max_set_cover(tokens=all_scene)
+    if 0:
+        semantic_similar_places_max_set = semantic_similar_places_max_set_cover(tokens=all_scene)
 
     semantic_similar_places = merge_semantic_similar_tokens(tokens=all_scene)
+    if 1:
+        df = pd.read_csv(os.path.join("/notebooks/multi_modal", "ontology_itc_per_image.csv"), index_col=False)       
+        # eval(df['frame3907.jpg'].dropna().values[0])
+        ontology_list_len = [len(eval(df[x].dropna().values[0])) for x in df.keys()][0]
+        n_mdf = len(df)
+        n_expected_places = 1+int(n_mdf/30)
 
-       
-    
+        mdf_places_retrival_score = [eval(df[x].dropna().values[0]) for x in df.keys()]
+        vlm_score_embed_per_mdf = np.array([y[1] for x in mdf_places_retrival_score for y in x]).reshape((ontology_list_len , -1))
+        from sklearn.cluster import KMeans 
+        print('The scikit-learn version is {}.'.format(sklearn.__version__)) 
+        kmeans = KMeans(n_clusters=n_expected_places, random_state=0, n_init="auto").fit(vlm_score_embed_per_mdf.T)
 
     is_indoor = any([True if x in  scene_top_k_frequent else False for x in ['lab', 'room', 'store', 'indoor', 'office', 'motel', 'home', 'house', 'bar', 'kitchen']])    #https://github.com/zhoubolei/places_devkit/blob/master/categories_places365.txt
     if is_indoor:
@@ -524,7 +557,8 @@ for movie_id in all_movie_id:
         opportunities = 10
         while (opportunities):
             if gpt_type == 'gpt-4':
-                rc = chatgpt.completion(prompt_prefix_then, n=1, max_tokens=256, model='gpt-4')
+                rc = chatgpt.completion(prompt_prefix_caption, n=1, max_tokens=256, model='gpt-4')
+                # rc = chatgpt.completion(prompt_prefix_then, n=1, max_tokens=256, model='gpt-4')
             else:
                 rc = chatgpt.completion(prompt_prefix_then, n=1, max_tokens=256)
             if rc == []:

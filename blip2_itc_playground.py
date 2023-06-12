@@ -66,7 +66,7 @@ def flatten(lst): return [x for l in lst for x in l]
 # From viper: xvlm.py  :     configs/base_config.yaml thresh_xvlm: 0.6
 # https://github.com/cvlab-columbia/viper/blob/9700f4a1104f98373424aea1c944ef19505b58fa/vision_models.py#L1189
 
-result_path = "/notebooks/nebula3_playground"
+result_path = "/notebooks/multi_modal"
 use_remote = False
 database_root = '/notebooks/dataset/Top_Gun_Maverick_mdf'#'/dataset/media/frames/Top_Gun_Maverick_2022_-_Mavericks_Test_Run_Scene__Movieclips'
 
@@ -220,10 +220,11 @@ def main(predefined_ontology_path=[]):
             #     image_ids_related_to_ipc = [int(x.split('.jpg')[0])  for x in os.listdir('/datasets/visualgenome/VG')]
                 
             results = list()
-
+            ontology_sim_result = list()
             filenames = [os.path.join(database_root, x) for x in os.listdir(database_root)
                 if x.endswith('jpg')]
-            for inx, image_path in enumerate(tqdm.tqdm(filnames)):
+            
+            for inx, image_path in enumerate(tqdm.tqdm(filenames)):
                 # if IPC_OR_ALL_VG != 'vg_all':
                 # ipc = get_visual_genome_record_by_ipc_id(ipc_id)
                 # # vg_ind_related_to_ipc = [ix for ix , x in enumerate(ipc_data) if x['image_id']==ipc_id][0]
@@ -248,26 +249,30 @@ def main(predefined_ontology_path=[]):
                     vlm_sim = ontology_imp.compute_scores(image)
                 elif vlm_type == 'blip2':
 
-                    filename = 'crop2.jpg'
-                    local_folder = 'tmp'
-                    re_id_result_path = os.path.join('/notebooks/nebula3_playground', local_folder)
-                    crop_image.save(os.path.join(re_id_result_path, filename))
-                    if use_remote:
-                        # re_id_mdfs_web_dir = 'paperspace@74.82.29.209:/datasets/'
-                        re_id_mdfs_web_dir = '/datasets/media/services'
-                        uploads = {re_id_result_path: re_id_mdfs_web_dir}
-                        web_dir = remote_storage.vp_config.WEB_PREFIX + '//datasets/media/services'
-                        remote_storage.upload_files_to_web(uploads)
+                    # filename = 'crop2.jpg'
+                    # local_folder = 'tmp'
+                    # re_id_result_path = os.path.join('/notebooks/nebula3_playground', local_folder)
+                    # crop_image.save(os.path.join(re_id_result_path, filename))
+                    # if use_remote:
+                    #     # re_id_mdfs_web_dir = 'paperspace@74.82.29.209:/datasets/'
+                    #     re_id_mdfs_web_dir = '/datasets/media/services'
+                    #     uploads = {re_id_result_path: re_id_mdfs_web_dir}
+                    #     web_dir = remote_storage.vp_config.WEB_PREFIX + '//datasets/media/services'
+                    #     remote_storage.upload_files_to_web(uploads)
 
                     vlm_sim = list()
                     for attrib_ont in ontology_list:
-                        itc_score = blip2.process_image_and_captions(file=os.path.join(re_id_result_path, filename), 
+                        itc_score = blip2.process_image_and_captions(file_or_url='file', file=image_path, 
                                         caption=attrib_ont, match_head = "itc")
                         itc_gt = itc_score.detach().cpu().numpy()[0].item()
                         vlm_sim.append(itc_gt)
                     vlm_sim = [(ont,float(sim)) for ont,sim in zip(ontology_list, vlm_sim)]
+                    ontology_sim_result.append({os.path.basename(image_path): vlm_sim})
 
-                    
+                    df = pd.DataFrame(ontology_sim_result)
+                    df.to_csv(os.path.join(result_path, 'ontology_itc_per_image.csv'), index=False)
+
+                    continue
                 elif vlm_type == 'xvlm':
                     if ontology  == 'predefined':
                         if any (df_all_attr_per_obj[df_all_attr_per_obj['object_name'] == visual_objects.names[0]]):
