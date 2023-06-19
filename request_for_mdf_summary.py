@@ -7,9 +7,9 @@ from database.arangodb import NEBULA_DB
 from typing import NamedTuple
 from nebula3_experiments.prompts_utils import *
 import time
-from nebula3_experiments.vg_eval import VGEvaluation
+from nebula3_experiments.vg_eval import VGEvaluation  # in case error of "Failed to import transformers, cannot import name 'DEFAULT_CIPHERS' from 'urllib3.util.ssl_"  : then pip install requests==2.29.0
 from typing import Union
-
+from sklearn.cluster import KMeans
 os.environ["TRANSFORMERS_CACHE"] = "/storage/hft_cache"
 os.environ["TORCH_HOME"] = "/storage/torch_cache"
 os.environ["CONFIG_NAME"] = "giltest"
@@ -25,7 +25,7 @@ LLM_OUTPUT_COLLECTION = "s4_llm_output"
 KEY_COLLECTION = "llm_config"
 FS_GPT_MODEL = 'text-davinci-003'
 CHAT_GPT_MODEL = 'gpt-3.5-turbo'
-FS_SAMPLES = 5                   # Samples for few-shot gpt
+# FS_SAMPLES = 5                   # Samples for few-shot gpt
 
 from abc import ABC, abstractmethod
 import openai
@@ -35,6 +35,51 @@ import requests
 
 import importlib
 print(importlib.metadata.version('openai'))
+
+def cluster_based_place_inference(kmeans_n_cluster=None, top_k_by_cluster=5):
+
+    df = pd.read_csv(os.path.join("/notebooks/multi_modal", "ontology_blip2_itc_per_mdf_top_gun.csv"), index_col=False)       
+    # eval(df['frame3907.jpg'].dropna().values[0])
+    ontology_list_len = [len(eval(df[x].dropna().values[0])) for x in df.keys()][0]
+    n_mdf = len(df)
+    
+    if kmeans_n_cluster is None:
+        kmeans_n_cluster = 1+int(n_mdf/30)
+
+    mdf_places_retrival_score = [eval(df[x].dropna().values[0]) for x in df.keys()]
+    mdf_no = [x for x in df.keys()]
+    vlm_score_embed_per_mdf = np.array([y[1] for x in mdf_places_retrival_score for y in x]).reshape((n_mdf , -1))  #[x for l in lst for x in l]
+    ontology_by_csv = np.array([y[0] for x in mdf_places_retrival_score for y in x]).reshape((n_mdf , -1))[0, :]
+    
+
+    # Sanity
+    if 0:
+        mdf_k = 'frame0014.jpg' # GT is 
+        score_14 = eval(df[mdf_k].dropna().values[0])
+        blip2_itc_mdf = np.array([x[1] for x in score_14]).reshape((ontology_list_len , -1))
+        blip2_itc_text = np.array([x[0] for x in score_14]).reshape((ontology_list_len , -1))
+        top_k_ind_per_mdf = np.argsort(blip2_itc_mdf.reshape(-1))[::-1][:top_k_by_cluster]
+        # ontology_by_csv[top_k_ind_per_mdf]
+        # all(ontology_by_csv[top_k_ind_per_mdf] == ['lecture room', 'conference room', 'television room', 'auditorium', 'classroom'])
+        assert(all(ontology_by_csv[top_k_ind_per_mdf] == ['lecture room', 'conference room', 'television room', 'auditorium', 'classroom']))
+        print([x for x in eval(df[mdf_k].dropna().values[0]) if x[0]=="lecture room"])
+    # import sklearn 
+    # print('The scikit-learn version is {}.'.format(sklearn.__version__)) 
+    kmeans = KMeans(n_clusters=kmeans_n_cluster, random_state=0, n_init="auto").fit(vlm_score_embed_per_mdf)
+    sum_square_within_dist = -kmeans.score(vlm_score_embed_per_mdf)
+    assert(kmeans.cluster_centers_.shape[1]==ontology_list_len)
+# Per cluster members in terms of MDf No.
+    classify_mdf = kmeans.predict(vlm_score_embed_per_mdf)
+    cluster_mdfs = [list(compress(mdf_no, (classify_mdf == x))) for x in np.unique(classify_mdf)]
+
+    all_centroids_places = list()
+    for clust in np.arange(kmeans_n_cluster):
+        top_k_ind_per_cluster = np.argsort(kmeans.cluster_centers_[clust, :])[::-1][:top_k_by_cluster]
+        print(kmeans.cluster_centers_[clust, :][top_k_ind_per_cluster])
+        print(ontology_by_csv[top_k_ind_per_cluster])
+        all_centroids_places.append(ontology_by_csv[top_k_ind_per_cluster])
+
+    return all_centroids_places, sum_square_within_dist, cluster_mdfs
 
 def semantic_similar_places_max_set_cover(tokens: list, topk=10, greedy=True) -> str:
     uniq_places, cnt = np.unique(tokens, return_counts=True)
@@ -243,11 +288,12 @@ all_movie_id = list()
 # all_movie_id.append('Movies/-7183176057624492662') # bad quality, bad ReID for indoor based summarization
 # if 1:
 #     all_movie_id.append('Movies/7417592353856606351')
+all_movie_id.append('Movies/-3323239468660533929') #actionclipautoautotrain00616.mp4
+all_movie_id.append('Movies/889658032723458366')
 if add_action:
     all_movie_id.append('Movies/7023181708619934815')
 all_movie_id.append('Movies/-6372550222147686303')
 all_movie_id.append('Movies/-6576299517238034659')
-all_movie_id.append('Movies/889658032723458366')
 all_movie_id.append('Movies/-5723319113316714990')
 all_movie_id.append('Movies/2219594956981209558')
 all_movie_id.append('Movies/6293447408186786707')
@@ -258,6 +304,7 @@ woman_names = list(np.unique(['Susan', 'Jennifer', 'Eileen', 'Sandra', 'Emma', '
 
 places = 'indoor'
 top_k_per_mdf = 1
+cluster_based_place = True
 print("promting_type", prompting_type)
 
 
@@ -319,6 +366,7 @@ for movie_id in all_movie_id:
             place_per_scene_elements[str(scene_boundary)].extend(scene)
         else:
             place_per_scene_elements[str(scene_boundary)] = scene
+
     all_scene = flatten(all_scene)
     uniq_places, cnt = np.unique(all_scene, return_counts=True)
     n_scenes_by_length = 1+int(len(mdf_no)/50)
@@ -328,18 +376,11 @@ for movie_id in all_movie_id:
         semantic_similar_places_max_set = semantic_similar_places_max_set_cover(tokens=all_scene)
 
     semantic_similar_places = merge_semantic_similar_tokens(tokens=all_scene)
-    if 1:
-        df = pd.read_csv(os.path.join("/notebooks/multi_modal", "ontology_itc_per_image.csv"), index_col=False)       
-        # eval(df['frame3907.jpg'].dropna().values[0])
-        ontology_list_len = [len(eval(df[x].dropna().values[0])) for x in df.keys()][0]
-        n_mdf = len(df)
-        n_expected_places = 1+int(n_mdf/30)
 
-        mdf_places_retrival_score = [eval(df[x].dropna().values[0]) for x in df.keys()]
-        vlm_score_embed_per_mdf = np.array([y[1] for x in mdf_places_retrival_score for y in x]).reshape((ontology_list_len , -1))
-        from sklearn.cluster import KMeans 
-        print('The scikit-learn version is {}.'.format(sklearn.__version__)) 
-        kmeans = KMeans(n_clusters=n_expected_places, random_state=0, n_init="auto").fit(vlm_score_embed_per_mdf.T)
+    if cluster_based_place and 0:
+        for i in np.arange(9,11,1):
+            locals()['all_centroids_places_' + str(i)], locals()['sum_square_within_dist_' + str(i)], _ = cluster_based_place_inference(kmeans_n_cluster=i)
+            
 
     is_indoor = any([True if x in  scene_top_k_frequent else False for x in ['lab', 'room', 'store', 'indoor', 'office', 'motel', 'home', 'house', 'bar', 'kitchen']])    #https://github.com/zhoubolei/places_devkit/blob/master/categories_places365.txt
     if is_indoor:
@@ -567,11 +608,6 @@ for movie_id in all_movie_id:
                 continue
             else:
                 break
-    # chatgpt install
-        # from chatgpt_wrapper import ChatGPT
-        # bot = ChatGPT()
-        # response = bot.ask(prompt)
-        # print(response)  # prints the response from chatGPT
     if n_uniq_ids >0:
         rc[0]  = '''The video shows {} people '''.format(n_uniq_ids) +rc[0] 
     results.append({'movie_id':movie_id, 'summary': rc[0], 'movie_name':movie_name, 'prompt': prompt_prefix_then, 'mdf_no': mdf_no})
@@ -587,82 +623,4 @@ CHAT_GPT_MODEL = 'gpt-3.5-turbo'
 'gpt-4-32k'
 'gpt-4-32k-0314'
 'gpt-4'
-
-                if len(ids_n) > 1:
-                    if 'men' in caption:
-                        ids_phrase = ', ' + ' and '.join([man_names[ids['id']] for ids in ids_n]) + ', '
-                        caption_re_id = caption.replace('men', 'men' + ids_phrase) 
-                        llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('men', 'men' + ids_phrase)
-                    elif 'women' in caption:
-                        ids_phrase = ', ' + ' and '.join([woman_names[ids['id']] for ids in ids_n]) + ', '
-                        caption_re_id = caption.replace('women', 'women' + ids_phrase) 
-                        llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('women', 'women' + ids_phrase)
-                    elif 'person' in caption:
-                        ids_phrase = ', ' + ' and '.join([man_names[ids['id']] for ids in ids_n]) + ', '
-                        caption_re_id = caption.replace('person', 'person' + ids_phrase)
-                        llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('person', 'person'  +ids_phrase)
-                    else:
-                        print('Warning Multiple Ids were found but were not associated !!!!')
-
-                elif len(ids_n) == 1:
-                    ids = id_rec['re-id'][0]
-                    if 'woman' in caption:
-                        if 'a woman' in caption :                    
-                            caption_re_id = caption.lower().replace('a woman', woman_names[ids['id']])
-                            llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a woman', woman_names[ids['id']])
-                        else:
-                            caption_re_id = caption.lower().replace('woman', woman_names[ids['id']])
-                            llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('woman', woman_names[ids['id']])
-                    elif 'lady' in caption:
-                        if 'a lady' in caption:
-                            caption_re_id = caption.lower().replace('a lady', woman_names[ids['id']])
-                            llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a lady', woman_names[ids['id']])
-                        else:
-                            caption_re_id = caption.lower().replace('lady', woman_names[ids['id']])
-                            llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('lady', woman_names[ids['id']])
-                    elif 'girl' in caption:
-                        if 'a girl' in caption:
-                            caption_re_id = caption.lower().replace('a girl', woman_names[ids['id']])
-                            llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a girl', woman_names[ids['id']])
-                        else:
-                            caption_re_id = caption.replace('girl', woman_names[ids['id']])
-                            llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('girl', woman_names[ids['id']])
-                    elif 'man' in caption:
-                        if 'a man' in caption:
-                            caption_re_id = caption.lower().replace('a man', man_names[ids['id']])
-                            llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a man', woman_names[ids['id']])
-                        else:
-                            caption_re_id = caption.replace('man', man_names[ids['id']])
-                            llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('man', woman_names[ids['id']])
-                    elif 'boy' in caption:
-                        if 'a boy' in caption:
-                            caption_re_id = caption.lower().replace('a boy', man_names[ids['id']])
-                            llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a boy', woman_names[ids['id']])
-                        else:
-                            caption_re_id = caption.replace('boy', man_names[ids['id']])
-                            llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('boy', woman_names[ids['id']])
-                    elif 'person' in caption:
-                        if 'a person' in caption:
-                            caption_re_id = caption.lower().replace('a person', man_names[ids['id']])
-                            llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a person', woman_names[ids['id']])
-                        else:
-                            caption_re_id = caption.replace('person', man_names[ids['id']])
-                            llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('person', woman_names[ids['id']])
-                    elif 'person' in caption:
-                        if 'a person' in caption:
-                            caption_re_id = caption.lower().replace('a person', man_names[ids['id']])
-                            llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a person', woman_names[ids['id']])
-                        else:
-                            caption_re_id = caption.replace('person', man_names[ids['id']])
-                            llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('person', woman_names[ids['id']])
-                    elif 'human' in caption:
-                        if 'a human' in caption:
-                            caption_re_id = caption.lower().replace('a human', man_names[ids['id']])
-                            llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a human', woman_names[ids['id']])
-                        else:
-                            caption_re_id = caption.lower().replace('human', man_names[ids['id']])
-                            llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('human', woman_names[ids['id']])
-                    else:
-                        print('Warning Id wsa found but was not associated n IDS {} !!!! Caption :{} '.format(len(ids_n), caption))
-
 """
