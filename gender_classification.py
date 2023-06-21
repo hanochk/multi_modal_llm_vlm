@@ -126,7 +126,7 @@ class ClipVideoUtils:
 
                 total_loss = loss_img(logits_per_image, ground_truth)
                 total_loss.backward()
-                if self.device == "cpu":
+                if self.device == "cpu" or 1:
                     optimizer.step()
                 else: 
                     convert_models_to_fp32(self.model)
@@ -135,6 +135,9 @@ class ClipVideoUtils:
 # 
         # Hidden assumption: The loss has a "mean" reduction (see pytorch loss arguments)
                 running_loss += total_loss.item() * dataloader.batch_size
+                print("total_loss", total_loss)
+                print("running_loss", running_loss)
+            print(running_loss / len(dataloader.dataset))
             epoch_loss.append(running_loss / len(dataloader.dataset))
         return epoch_loss ,running_loss
 
@@ -302,7 +305,7 @@ def main():
             raise ValueError("something wrong with model or data has changed ")
         # FT model wit hmoderate Lr
     loss_img = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(clip_obj.model.parameters(), lr=1e-5, weight_decay=0.001) #Params used from paper, the lr is smaller, more safe for fine tuning to new dataset
+    optimizer = optim.AdamW(clip_obj.model.parameters(), lr=1e-5, weight_decay=0.001) #Params used from paper, the lr is smaller, more safe for fine tuning to new dataset
     running_loss = clip_obj.train_model_contrastive(dataloader=train_dataloader,optimizer=optimizer, 
                                                     loss_img=loss_img, max_iterations=1000)
 
