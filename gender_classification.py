@@ -21,7 +21,7 @@ def to_device(tensor_or_list, device):
     return tensor_or_list
 
 class Data(Dataset):
-    def __init__(self, img_preprocess, tokenizer, image_path: list[str], text_list: list[str], **kwargs): # add super for father class
+    def __init__(self, img_preprocess, tokenizer, image_path: list[str], text_list: list[str], **kwargs): 
         super(Dataset, self).__init__()
 
         self.img_preprocess = img_preprocess
@@ -31,7 +31,7 @@ class Data(Dataset):
         self.is_classifier_uniq_cls = kwargs.pop('classifier_uniq_cls', False)
         if self.is_classifier_uniq_cls:
             self.classes = np.unique(text_list)
-            self.classifier_uniq_cls_tokens = tokenizer(["A photo of a {}".format(x) for x in self.classes]) #[49406,   320,  1125,   539,   320,  2801, 49407] a=320 |man=2801
+            self.classifier_uniq_cls_tokens = tokenizer(["A photo of a {}".format(x) for x in self.classes]) #[49406,   320,  1125,   539,   320,  2801, 49407] 'a'=320 | male=2801
 
         assert(len(self.image_path) == len(self.text_tokens))
         return
@@ -43,14 +43,11 @@ class Data(Dataset):
         if self.is_classifier_uniq_cls:
             image = self.img_preprocess(Image.open(self.image_path[idx]))
             label = np.where(self.classes == self.class_text[idx])[0].item()
-            # text = self.text_tokens[idx]
-            # print(idx, self.class_text[idx])
             return image, label, torch.tensor([-1])
         else:
             image = self.img_preprocess(Image.open(self.image_path[idx]))
             text = self.text_tokens[idx]
             label = [0 if self.class_text[idx] == 'female' else 1][0] # 0 -feamle 1- male no offence :-)
-            # print(self.class_text[idx])
             return image, label, text
 
 # pip install git+https://github.com/openai/CLIP.git
