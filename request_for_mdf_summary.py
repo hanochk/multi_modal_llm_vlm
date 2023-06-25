@@ -59,8 +59,9 @@ def query(payload, model_id, api_token):
 
 class SummarizeScene():
     def __init__(self, prompting_type: str='few_shot', gpt_type: str='gpt-4',semantic_token_deduplication: bool=True,
-                    min_shots_for_semantic_similar_dedup: int=40, verbose: bool=False):
+                    min_shots_for_semantic_similar_dedup: int=40, write_res_to_db: bool=True, verbose: bool=False):
         
+        self.write_res_to_db = write_res_to_db
         self.gpt_type = gpt_type
         self.prompting_type = prompting_type
         self.semantic_token_deduplication = semantic_token_deduplication
@@ -105,6 +106,10 @@ class SummarizeScene():
             evaluator = None
 
         self.min_shots_for_semantic_similar_dedup = min_shots_for_semantic_similar_dedup
+        self.collection_name = 's4_scene_summary'
+
+        return
+
 
     def _places_semantic_dedup(self, mdf_no: list[int], movie_id: str):
         # Place voting
@@ -132,10 +137,10 @@ class SummarizeScene():
         # scene_top_k_frequent = uniq_places[np.argmax(cnt)] # take most frequent place
         scene_top_k_frequent = uniq_places[np.argsort(cnt)[::-1]]#[:n_scenes_by_length] 
         if 0:
-            semantic_similar_places_max_set = semantic_similar_places_max_set_cover(tokens=all_scene)
+            semantic_similar_places_max_set = self._semantic_similar_places_max_set_cover(tokens=all_scene)
         
         if self.semantic_token_deduplication and len(place_per_scene_elements) > self.min_shots_for_semantic_similar_dedup:
-            scene_top_k_frequent = self.merge_semantic_similar_tokens(tokens=all_scene)
+            scene_top_k_frequent = self._merge_semantic_similar_tokens(tokens=all_scene)
 
         if self.verbose and (self.semantic_token_deduplication and len(place_per_scene_elements) < self.min_shots_for_semantic_similar_dedup):
             print('Too short clip/scene to filter places by semantic simillarity')
@@ -143,10 +148,10 @@ class SummarizeScene():
 
         if 0: # unittest
             for i in np.arange(9,11,1):
-                locals()['all_centroids_places_' + str(i)], locals()['sum_square_within_dist_' + str(i)], _ = cluster_based_place_inference(kmeans_n_cluster=i)
+                locals()['all_centroids_places_' + str(i)], locals()['sum_square_within_dist_' + str(i)], _ = self._cluster_based_place_inference(kmeans_n_cluster=i)
                 
-
         return scene_top_k_frequent
+
 # pre_defined_mdf_in_frame_no : given specific frames to process over that matches MDF file name 
     def summarize_scene_forward(self, movie_id: str, frame_boundary: list[int]= []):
 
@@ -375,9 +380,20 @@ class SummarizeScene():
         if n_uniq_ids >0:
             rc[0]  = '''The video shows {} main character. {}'''.format(n_uniq_ids, rc[0]) 
         
+        if self.write_res_to_db:
+            self._insert_json_to_db(movie_id, rc[0], mdf_no)
+
         return rc[0]
 
-    def cluster_based_place_inference(self, kmeans_n_cluster: int =None, top_k_by_cluster: int=5):
+    def _insert_json_to_db(self, movie_id:str, scene_summ: str, mdf_no: list):
+
+        combined_json = {'movie_id': movie_id, 'SM_MDF': mdf_no, 'scene_summary': scene_summ}
+        res = nebula_db.write_doc_by_key(combined_json, self.collection_name, overwrite=True, key_list=['movie_id'])
+        print("Successfully inserted to database. Collection name: {}".format(self.collection_name))
+
+        return
+
+    def _cluster_based_place_inference(self, kmeans_n_cluster: int =None, top_k_by_cluster: int=5):
         
         df = pd.read_csv(os.path.join("/notebooks/multi_modal", "ontology_blip2_itc_per_mdf_top_gun.csv"), index_col=False)       
         # eval(df['frame3907.jpg'].dropna().values[0])
@@ -425,7 +441,7 @@ class SummarizeScene():
         return all_centroids_places, sum_square_within_dist, cluster_mdfs
 
 
-    def semantic_similar_places_max_set_cover(self, tokens: list, topk: int=10, greedy: bool=True) -> str:
+    def _semantic_similar_places_max_set_cover(self, tokens: list, topk: int=10, greedy: bool=True) -> str:
 
         uniq_places, cnt = np.unique(tokens, return_counts=True)
         frequent_uniq_places = uniq_places[np.argsort(cnt)[::-1]] # sort according to frequency
@@ -451,7 +467,7 @@ class SummarizeScene():
 
 #topk == -1 then no additional top k 
 
-    def merge_semantic_similar_tokens(self, tokens: list, topk:int=10, sim_th: int=0.7, verbose:bool=False) -> str:
+    def _merge_semantic_similar_tokens(self, tokens: list, topk:int=10, sim_th: int=0.7, verbose:bool=False) -> str:
 
         uniq_places, cnt = np.unique(tokens, return_counts=True)
         frequent_uniq_places = uniq_places[np.argsort(cnt)[::-1]] # sort according to frequency
