@@ -59,14 +59,15 @@ def query(payload, model_id, api_token):
 
 class SummarizeScene():
     def __init__(self, prompting_type: str='few_shot', gpt_type: str='gpt-4',semantic_token_deduplication: bool=True,
-                    min_shots_for_semantic_similar_dedup: int=40, write_res_to_db: bool=True, verbose: bool=False):
+                    min_shots_for_semantic_similar_dedup: int=40, write_res_to_db: bool=True, caption_callback=None, 
+                    verbose: bool=False):
         
         self.write_res_to_db = write_res_to_db
         self.gpt_type = gpt_type
         self.prompting_type = prompting_type
         self.semantic_token_deduplication = semantic_token_deduplication
         self.verbose = verbose
-
+        self.caption_callback = caption_callback
         self.one_shot_context_ex_prefix_summary = '''Video Summary: 3 persons, in a room, Susan, Michael, & Tom. They look strange, Tom with a giant head, michael with a mask, one of them is giant. The three people appear very tense as they look around frantically. '''
         self.one_shot_context_ex_prefix_caption = '''Caption 1: Susan standing in front of a tv screen with a camera. 
                             Caption 2: Michael with a body in the middle of the screen. 
@@ -110,7 +111,7 @@ class SummarizeScene():
 
         return
 
-
+# Semantic de-dupllication
     def _places_semantic_dedup(self, mdf_no: list[int], movie_id: str):
         # Place voting
         all_scene = list()
@@ -160,11 +161,17 @@ class SummarizeScene():
         all_global_tokens = list()
         all_obj_LLM_OUTPUT_COLLECTION_cand = list()
         all_obj_LLM_OUTPUT_COLLECTION_cand_re_id = list()
-        rc_movie_id = nebula_db.get_doc_by_key({'_id': movie_id}, MOVIES_COLLECTION) # + scene_elements
-        # scene_elements = rc_movie_id['scene_elements']
-        movie_name = os.path.basename(rc_movie_id['url_path'])
-        rc_reid = nebula_db.get_doc_by_key({'movie_id': movie_id}, REID_CLUES_COLLECTION)
-        rc_reid_fusion = nebula_db.get_doc_by_key({'movie_id': movie_id}, FUSION_COLLECTION)
+        try:
+            rc_movie_id = nebula_db.get_doc_by_key({'_id': movie_id}, MOVIES_COLLECTION) # + scene_elements
+            # scene_elements = rc_movie_id['scene_elements']
+            movie_name = os.path.basename(rc_movie_id['url_path'])
+            self.movie_name = movie_name
+            rc_reid = nebula_db.get_doc_by_key({'movie_id': movie_id}, REID_CLUES_COLLECTION)
+            rc_reid_fusion = nebula_db.get_doc_by_key({'movie_id': movie_id}, FUSION_COLLECTION)
+        except Exception as e:
+            print(e)        
+            return -1
+
         if not rc_reid_fusion or 1: # TODO @@HK
             man_names = list(np.unique(['James', 'Michael', 'Tom', 'George' ,'Nicolas', 'John', 'daniel', 'Henry', 'Jack', 'Leo', 'Oliver']))
             woman_names = list(np.unique(['Susan', 'Jennifer', 'Eileen', 'Sandra', 'Emma', 'Charlotte', 'Mia']))
@@ -195,7 +202,12 @@ class SummarizeScene():
                 
             mid = MovieImageId(movie_id=movie_id, frame_num=frame_num)
             obj = nebula_db.get_movie_frame_from_collection(mid, VISUAL_CLUES_COLLECTION)
-            caption = obj['global_caption']['blip']
+            
+            if self.caption_callback:
+                caption = self.caption_callback(obj['url'])
+            else:
+                caption = obj['global_caption']['blip']
+
             scene = obj['global_scenes']['blip'][0][0]
             # all_scene.append(scene)
             all_global_tokens.extend([x[0] for x in obj['global_objects']['blip']])
@@ -326,7 +338,8 @@ class SummarizeScene():
                                                         in_context_examples=self.one_shot_context_ex_prefix_then, few_shot_seperator = '''###''',
                                                         prolog_refine=', by 2-3 sentences, ', uniq_id_prior_put_in_caption_end=True)
             
-            
+            self.prompt_prefix_caption = prompt_prefix_caption
+            self.prompt_prefix_then = prompt_prefix_then
             # https://github.com/NEBULA3PR0JECT/nebula3_llm_task/blob/8254fb4bb1f81ae87ece51f91cf76d5a778ed6f1/llm_orchestration.py#LL545C31-L548C34
         else:
             raise
@@ -596,12 +609,14 @@ def process_benchmark(benchmark_name, **kwargs):
         print(rc1)
     return results
 
+
 def main():
+
     summarize_scene = SummarizeScene()
 
     result_path = "/notebooks/nebula3_playground"
     unique_run_name = str(int(time.time()))
-
+    # http://209.51.170.37:8087/docs
     add_action = True
 
     results = list()
@@ -609,7 +624,6 @@ def main():
 
     all_movie_id.append('Movies/-3323239468660533929') #actionclipautoautotrain00616.mp4
     all_movie_id.append('Movies/-6372550222147686303')
-    all_movie_id.append('Movies/-3323239468660533929') #actionclipautoautotrain00616.mp4
     if add_action:
         all_movie_id.append('Movies/7023181708619934815')
     all_movie_id.append('Movies/889658032723458366')
