@@ -154,7 +154,30 @@ class SummarizeScene():
         return scene_top_k_frequent
 
 # pre_defined_mdf_in_frame_no : given specific frames to process over that matches MDF file name 
-    def summarize_scene_forward(self, movie_id: str, frame_boundary: list[int]= []):
+    def summarize_scene_forward(self, movie_id: str, frame_boundary: list[list]= []):
+        if frame_boundary != []:
+            if not (any(isinstance(el, list) for el in frame_boundary)):
+                print("Frame boundary structure error : should be [[fstart1, fstop1][fstart2, fstop2]]")
+            all_summ = list()
+            all_mdf_no = list()
+            for scn_frame in range(len(frame_boundary)):
+                if len(frame_boundary[scn_frame]) == 2:
+                    summ, mdf_no = self._summarize_scene_forward_scene(movie_id, frame_boundary[scn_frame])
+                    all_summ.append(summ)
+                    all_mdf_no.append(mdf_no)
+                else:
+                    print("Warning frame start/stop is missing need to supply 2 elements", frame_boundary[scn_frame])
+            if self.write_res_to_db:
+                self._insert_json_to_db(movie_id, all_summ, all_mdf_no)
+        
+        else:
+            summ, mdf_no = self._summarize_scene_forward_scene(movie_id)
+            if self.write_res_to_db:
+                self._insert_json_to_db(movie_id, summ, mdf_no)
+
+        return all_summ
+
+    def _summarize_scene_forward_scene(self, movie_id: str, frame_boundary: list[int]= []):
 
         all_caption = list()
         all_reid_caption = list()
@@ -373,7 +396,7 @@ class SummarizeScene():
         elif self.gpt_type == 'chat_gpt_3.5' or self.gpt_type == 'gpt-4':
             if len(prompt_prefix_then) > 4096-256 and self.gpt_type == 'chat_gpt_3.5':
                 print('Context window is too long', len(prompt_prefix_then))
-            if len(prompt_prefix_then) > 4096-256 and self.gpt_type == 'gpt-4':
+            if len(prompt_prefix_then) > 32*1024-256 and self.gpt_type == 'gpt-4':
                 print('Context window is too long', len(prompt_prefix_then))
             
             opportunities = 10
@@ -382,7 +405,7 @@ class SummarizeScene():
                     rc = self.chatgpt.completion(prompt_prefix_caption, n=1, max_tokens=256, model='gpt-4')
                     # rc = chatgpt.completion(prompt_prefix_then, n=1, max_tokens=256, model='gpt-4')
                 else:
-                    rc = self.chatgpt.completion(prompt_prefix_then, n=1, max_tokens=256)
+                    rc = self.chatgpt.completion(prompt_prefix_then, n=1, max_tokens=256) #TODO add ChatGPT 16K
                 if rc == []:
                     time.sleep(1)
                     opportunities -= 1
@@ -393,10 +416,7 @@ class SummarizeScene():
         if n_uniq_ids >0:
             rc[0]  = '''The video shows {} main character. {}'''.format(n_uniq_ids, rc[0]) 
         
-        if self.write_res_to_db:
-            self._insert_json_to_db(movie_id, rc[0], mdf_no)
-
-        return rc[0]
+        return rc[0], mdf_no
 
     def _insert_json_to_db(self, movie_id:str, scene_summ: str, mdf_no: list):
 
@@ -622,12 +642,12 @@ def main():
     results = list()
     all_movie_id = list()
 
+    all_movie_id.append('Movies/-6372550222147686303')
     all_movie_id.append('Movies/-3323239468660533929') #actionclipautoautotrain00616.mp4
     all_movie_id.append('Movies/-6372550222147686303')
     if add_action:
         all_movie_id.append('Movies/7023181708619934815')
     all_movie_id.append('Movies/889658032723458366')
-    all_movie_id.append('Movies/-6372550222147686303')
     all_movie_id.append('Movies/-6576299517238034659')
     all_movie_id.append('Movies/-5723319113316714990')
     all_movie_id.append('Movies/2219594956981209558')
@@ -640,12 +660,14 @@ def main():
     for movie_id in all_movie_id:
 
         frame_boundary = []
-        if movie_id == 'Movies/-6372550222147686303':
-            frame_boundary = [834, 1181]
+        # if movie_id == 'Movies/-6372550222147686303':
+        #     frame_boundary = [[834, 1181]]
+        if movie_id == 'Movies/-6372550222147686303':  # dummy for debug
+             frame_boundary = [[834, 1181], [14,272]]
         if movie_id == 'Movies/-5723319113316714990':
-            frame_boundary = [197, 320]
+            frame_boundary = [[197, 320]]
         if movie_id == 'Movies/6293447408186786707':
-            frame_boundary = [1035, 1290]
+            frame_boundary = [[1035, 1290]]
 
         scn_summ = summarize_scene.summarize_scene_forward(movie_id, frame_boundary)
         # scn_summ = summarize_scene.summarize_scene_forward(movie_id) # for all clip w/o frame boundaries 
