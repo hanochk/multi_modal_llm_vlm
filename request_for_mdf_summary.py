@@ -58,7 +58,7 @@ def query(payload, model_id, api_token):
 
 
 class SummarizeScene():
-    def __init__(self, prompting_type: str='few_shot', gpt_type: str='gpt-4',semantic_token_deduplication: bool=True,
+    def __init__(self, prompting_type: str='few_shot', gpt_type: str='gpt-3.5-turbo-16k',semantic_token_deduplication: bool=True,
                     min_shots_for_semantic_similar_dedup: int=40, write_res_to_db: bool=True, caption_callback=None, 
                     verbose: bool=False):
         
@@ -97,7 +97,7 @@ class SummarizeScene():
 
         if self.gpt_type == 'HF_':
             InferenceApi(repo_id="gpt-j-6b-shakespeare", token=api_token)
-        elif self.gpt_type == 'chat_gpt_3.5' or self.gpt_type == 'gpt-4':
+        elif self.gpt_type == 'chat_gpt_3.5' or self.gpt_type == 'gpt-4' or self.gpt_type == 'gpt-3.5-turbo-16k':
             self.chatgpt = ChatGptLLM()
         # elif self.gpt_type == 'text-davinci-003':
         #     context_win = 4096
@@ -154,7 +154,11 @@ class SummarizeScene():
         return scene_top_k_frequent
 
 # pre_defined_mdf_in_frame_no : given specific frames to process over that matches MDF file name 
-    def summarize_scene_forward(self, movie_id: str, frame_boundary: list[list]= []):
+    def summarize_scene_forward(self, movie_id: str, frame_boundary: list[list]= [], caption_type='vlm'):
+        if caption_type != 'vlm' and caption_type != 'dense_caption':
+            print("Unknown caption type option given : {} but should be (vlm/dense_caption)".format(caption_type))
+            return
+
         if frame_boundary != []:
             if not (any(isinstance(el, list) for el in frame_boundary)):
                 print("Frame boundary structure error : should be [[fstart1, fstop1][fstart2, fstop2]]")
@@ -162,22 +166,24 @@ class SummarizeScene():
             all_mdf_no = list()
             for scn_frame in range(len(frame_boundary)):
                 if len(frame_boundary[scn_frame]) == 2:
-                    summ, mdf_no = self._summarize_scene_forward_scene(movie_id, frame_boundary[scn_frame])
+                    summ, mdf_no = self._summarize_scene_forward_scene(movie_id, frame_boundary[scn_frame], caption_type=caption_type)
                     all_summ.append(summ)
                     all_mdf_no.append(mdf_no)
                 else:
                     print("Warning frame start/stop is missing need to supply 2 elements", frame_boundary[scn_frame])
             if self.write_res_to_db:
                 self._insert_json_to_db(movie_id, all_summ, all_mdf_no)
-        
+            
+            return all_summ
         else:
-            summ, mdf_no = self._summarize_scene_forward_scene(movie_id)
+            summ, mdf_no = self._summarize_scene_forward_scene(movie_id, caption_type=caption_type)
             if self.write_res_to_db:
                 self._insert_json_to_db(movie_id, summ, mdf_no)
+            
+            return summ
+        
 
-        return all_summ
-
-    def _summarize_scene_forward_scene(self, movie_id: str, frame_boundary: list[int]= []):
+    def _summarize_scene_forward_scene(self, movie_id: str, frame_boundary: list[int]= [], caption_type:str= 'vlm'):
 
         all_caption = list()
         all_reid_caption = list()
@@ -190,17 +196,19 @@ class SummarizeScene():
             movie_name = os.path.basename(rc_movie_id['url_path'])
             self.movie_name = movie_name
             rc_reid = nebula_db.get_doc_by_key({'movie_id': movie_id}, REID_CLUES_COLLECTION)
-            rc_reid_fusion = nebula_db.get_doc_by_key({'movie_id': movie_id}, FUSION_COLLECTION)
+            rc_reid_fusion = nebula_db.get_doc_by_key2({'movie_id': movie_id}, FUSION_COLLECTION)
         except Exception as e:
             print(e)        
-            return -1
-
-        if not rc_reid_fusion or 1: # TODO @@HK
-            man_names = list(np.unique(['James', 'Michael', 'Tom', 'George' ,'Nicolas', 'John', 'daniel', 'Henry', 'Jack', 'Leo', 'Oliver']))
-            woman_names = list(np.unique(['Susan', 'Jennifer', 'Eileen', 'Sandra', 'Emma', 'Charlotte', 'Mia']))
-        else:
-            print('rename actors !!!')
-            
+            return -1, -1
+# Actors name 
+        man_names = list(np.unique(['James', 'Michael', 'Tom', 'George' ,'Nicolas', 'John', 'daniel', 'Henry', 'Jack', 'Leo', 'Oliver']))
+        woman_names = list(np.unique(['Susan', 'Jennifer', 'Eileen', 'Sandra', 'Emma', 'Charlotte', 'Mia']))
+        celeb_id_name_dict = dict()
+        if rc_reid_fusion:
+            print("Found actors names in DB")            
+            celeb_id_name  = [{int(rec['rois'][0]['face_id']): rec['rois'][0]['reid_name']} for rec in rc_reid_fusion]
+            for f in celeb_id_name:
+                celeb_id_name_dict.update(f)   # Uniqeness actor name dict         
 
         all_ids = list()
         # all_scene = list()
@@ -226,16 +234,20 @@ class SummarizeScene():
             mid = MovieImageId(movie_id=movie_id, frame_num=frame_num)
             obj = nebula_db.get_movie_frame_from_collection(mid, VISUAL_CLUES_COLLECTION)
             
-            if self.caption_callback:
-                caption = self.caption_callback(obj['url'])
+            if caption_type == 'vlm':            
+                if self.caption_callback:
+                    caption = self.caption_callback(obj['url'])
+                else:
+                    caption = obj['global_caption']['blip']
+            elif caption_type == 'dense_caption':
+                caption = nebula_db.get_movie_frame_from_collection(mid,LLM_OUTPUT_COLLECTION)['candidate']
+                all_obj_LLM_OUTPUT_COLLECTION_cand.append(caption)
             else:
-                caption = obj['global_caption']['blip']
-
+                raise 
+                
             scene = obj['global_scenes']['blip'][0][0]
             # all_scene.append(scene)
             all_global_tokens.extend([x[0] for x in obj['global_objects']['blip']])
-            obj_LLM_OUTPUT_COLLECTION_cand = nebula_db.get_movie_frame_from_collection(mid,LLM_OUTPUT_COLLECTION)['candidate']
-            all_obj_LLM_OUTPUT_COLLECTION_cand.append(obj_LLM_OUTPUT_COLLECTION_cand)
             # mdf_re_id_dict = rc_reid['frames'][ix]
             mdf_re_id_dict = [x  for x in rc_reid['frames'] if x['frame_num']==frame_num]
             if mdf_re_id_dict: #and is_indoor: #places == 'indoor':  # conditioned on man in the scene if places==indoor
@@ -254,28 +266,28 @@ class SummarizeScene():
                             # Gender exclusive
                             male_str = ['man', 'person', 'boy', 'human']
                             female_str = ['woman', 'lady' , 'girl']
-                            many_person_str = ['men', 'women', 'person']
+                            many_person_str = ['men', 'women', 'person', 'people']
 
                             is_male = list(compress(male_str, [caption.find(x)>0 for x in male_str]))
                             is_female = list(compress(female_str, [caption.find(x)>0 for x in female_str]))
 
                             # if len(ids_n) > 1 or 1:
                             if 'men' in caption:
-                                ids_phrase = ', ' + ' and '.join([man_names[ids['id']] for ids in ids_n]) + ', '
+                                ids_phrase = ', ' + ' and '.join([celeb_id_name_dict.get(ids['id'], man_names[ids['id']]) for ids in ids_n]) + ', '
                                 caption_re_id = caption.replace('men', 'men' + ids_phrase) 
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('men', 'men' + ids_phrase)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('men', 'men' + ids_phrase)
                             elif 'women' in caption:
-                                ids_phrase = ', ' + ' and '.join([woman_names[ids['id']] for ids in ids_n]) + ', '
+                                ids_phrase = ', ' + ' and '.join([celeb_id_name_dict.get(ids['id'], woman_names[ids['id']]) for ids in ids_n]) + ', '
                                 caption_re_id = caption.replace('women', 'women' + ids_phrase) 
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('women', 'women' + ids_phrase)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('women', 'women' + ids_phrase)
                             elif 'person' in caption:
-                                ids_phrase = ', ' + ' and '.join([man_names[ids['id']] for ids in ids_n]) + ', '
+                                ids_phrase = ', ' + ' and '.join([celeb_id_name_dict.get(ids['id'], man_names[ids['id']]) for ids in ids_n]) + ', '
                                 caption_re_id = caption.replace('person', 'person' + ids_phrase)
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('person', 'person'  +ids_phrase)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('person', 'person'  +ids_phrase)
                             elif 'people' in caption:  # @@HK to test effect  on Top gun re-id_frame0032 (a group of people sitting in an airplane with a man in the middle of the : Id within the people and one is with man need to refine)
-                                ids_phrase = ', ' + ' and '.join([man_names[ids['id']] for ids in ids_n]) + ', '
+                                ids_phrase = ', ' + ' and '.join([celeb_id_name_dict.get(ids['id'], man_names[ids['id']]) for ids in ids_n]) + ', '
                                 caption_re_id = caption.replace('people', 'people with' + ids_phrase)
-                                llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('people', 'people'  +ids_phrase)
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('people', 'people'  +ids_phrase)
 # @@TODO : 1st singular IDs man/woman placing than plural and should be mutual exclusive , hence manage a list when you can take out items following placing singular IDS
 # The people will by Id[0] + people and Id[1] instead of man =>gender classification needed, or ID with celeb name can cover up the whole issue
                             # ids = id_rec['re-id'][0]  # TODO take the relavant Gender based ID out of the IDs in the MDF
@@ -284,69 +296,69 @@ class SummarizeScene():
                             # ids = id_rec['re-id'][0]
                                 if 'woman' in caption:
                                     if 'a woman' in caption :                    
-                                        caption_re_id = caption.lower().replace('a woman', woman_names[ids['id']], 1)
+                                        caption_re_id = caption.lower().replace('a woman', celeb_id_name_dict.get(ids['id'], woman_names[ids['id']]), 1)
                                         # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a woman', woman_names[ids['id']])
                                     else:
-                                        caption_re_id = caption.lower().replace('woman', woman_names[ids['id']], 1)
+                                        caption_re_id = caption.lower().replace('woman', celeb_id_name_dict.get(ids['id'], woman_names[ids['id']]), 1)
                                         # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('woman', woman_names[ids['id']])
                                 elif 'lady' in caption:
                                     if 'a lady' in caption:
-                                        caption_re_id = caption.lower().replace('a lady', woman_names[ids['id']], 1)
+                                        caption_re_id = caption.lower().replace('a lady', celeb_id_name_dict.get(ids['id'], woman_names[ids['id']]), 1)
                                         # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a lady', woman_names[ids['id']])
                                     else:
-                                        caption_re_id = caption.lower().replace('lady', woman_names[ids['id']], 1)
+                                        caption_re_id = caption.lower().replace('lady', celeb_id_name_dict.get(ids['id'], woman_names[ids['id']]), 1)
                                         # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('lady', woman_names[ids['id']])
                                 elif 'girl' in caption:
                                     if 'a girl' in caption:
-                                        caption_re_id = caption.lower().replace('a girl', woman_names[ids['id']], 1)
+                                        caption_re_id = caption.lower().replace('a girl', celeb_id_name_dict.get(ids['id'], woman_names[ids['id']]), 1)
                                         # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a girl', woman_names[ids['id']])
                                     else:
-                                        caption_re_id = caption.replace('girl', woman_names[ids['id']], 1)
+                                        caption_re_id = caption.replace('girl', celeb_id_name_dict.get(ids['id'], woman_names[ids['id']]), 1)
                                         # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('girl', woman_names[ids['id']])
                                 elif 'man' in caption:
                                     if 'a man' in caption:
-                                        caption_re_id = caption.lower().replace('a man', man_names[ids['id']], 1)
+                                        caption_re_id = caption.lower().replace('a man', celeb_id_name_dict.get(ids['id'], man_names[ids['id']]), 1)
                                         # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a man', man_names[ids['id']], 1)# TODO the obj_LLM_OUTPUT_COLLECTION_cand can chnage the a man to the man 
                                     else:
-                                        caption_re_id = caption.replace('man', man_names[ids['id']], 1)
+                                        caption_re_id = caption.replace('man', celeb_id_name_dict.get(ids['id'], man_names[ids['id']]), 1)
                                         # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('man', man_names[ids['id']])
                                 elif 'boy' in caption:
                                     if 'a boy' in caption:
-                                        caption_re_id = caption.lower().replace('a boy', man_names[ids['id']], 1)
+                                        caption_re_id = caption.lower().replace('a boy', celeb_id_name_dict.get(ids['id'], man_names[ids['id']]), 1)
                                         # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a boy', man_names[ids['id']])
                                     else:
-                                        caption_re_id = caption.replace('boy', man_names[ids['id']], 1)
+                                        caption_re_id = caption.replace('boy', celeb_id_name_dict.get(ids['id'], man_names[ids['id']]), 1)
                                 elif 'person' in caption:
                                     if 'a person' in caption:
-                                        caption_re_id = caption.lower().replace('a person', man_names[ids['id']], 1)
+                                        caption_re_id = caption.lower().replace('a person', celeb_id_name_dict.get(ids['id'], man_names[ids['id']]), 1)
                                         # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a person', man_names[ids['id']])
                                     else:
-                                        caption_re_id = caption.replace('person', man_names[ids['id']], 1)
+                                        caption_re_id = caption.replace('person', celeb_id_name_dict.get(ids['id'], man_names[ids['id']]), 1)
                                         # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('person', man_names[ids['id']])
                                 elif 'human' in caption:
                                     if 'a human' in caption:
-                                        caption_re_id = caption.lower().replace('a human', man_names[ids['id']], 1)
+                                        caption_re_id = caption.lower().replace('a human', celeb_id_name_dict.get(ids['id'], man_names[ids['id']]), 1)
                                         # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a human', man_names[ids['id']])
                                     else:
-                                        caption_re_id = caption.lower().replace('human', man_names[ids['id']], 1)
+                                        caption_re_id = caption.lower().replace('human', celeb_id_name_dict.get(ids['id'], man_names[ids['id']]), 1)
                                         # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('human', man_names[ids['id']])
-                                else:
-                                    print('Warning Id was found but was not associated n IDS: {} !!!! Caption: {} movie name: {}'.format(len(ids_n), caption, movie_name))
+                                # else: # could be found under people/plural list
+                                #     print('Warning Id was found but was not associated n IDS: {} !!!! Caption: {} movie name: {}'.format(len(ids_n), caption, movie_name))
                                 
                         
                 all_reid_caption.append(caption_re_id)
             else:
                 all_reid_caption.append(caption)
 
-        if all_reid_caption:
-            seq_caption = ' and then '.join(all_reid_caption)
-            n_uniq_ids = np.unique(all_ids).shape[0]
-            seq_caption_w_caption = ''.join([' Caption ' + str(ix+1) + ': ' + x  for ix, x in enumerate(all_reid_caption)])
-            seq_dense_caption_w_caption = ''.join([' Caption ' + str(ix+1) + ': ' + x for ix, x in enumerate(all_obj_LLM_OUTPUT_COLLECTION_cand_re_id)])
-        else:
-            seq_caption = ' and then '.join(all_caption)     # for ZS       
-            seq_caption_w_caption = ''.join([' Caption ' + str(ix+1) + ': ' + x  for ix, x in enumerate(all_caption)])
-            n_uniq_ids = 0
+        # if all_reid_caption:
+        seq_caption = ' and then '.join(all_reid_caption)
+        seq_caption_w_caption = ''.join([' Caption ' + str(ix+1) + ': ' + x  for ix, x in enumerate(all_reid_caption)])
+        n_uniq_ids = np.unique(all_ids).shape[0]
+            # seq_dense_caption_w_caption = ''.join([' Caption ' + str(ix+1) + ': ' + x for ix, x in enumerate(all_obj_LLM_OUTPUT_COLLECTION_cand_re_id)])
+        # else:
+        #     seq_caption = ' and then '.join(all_caption)     # for ZS       
+        #     seq_caption_w_caption = ''.join([' Caption ' + str(ix+1) + ': ' + x  for ix, x in enumerate(all_caption)])
+        #     n_uniq_ids = 0
             
 
 
@@ -393,19 +405,18 @@ class SummarizeScene():
                 else:
                     break
 
-        elif self.gpt_type == 'chat_gpt_3.5' or self.gpt_type == 'gpt-4':
+        elif self.gpt_type == 'chat_gpt_3.5' or self.gpt_type == 'gpt-4' or self.gpt_type == 'gpt-3.5-turbo-16k':
             if len(prompt_prefix_then) > 4096-256 and self.gpt_type == 'chat_gpt_3.5':
+                print('Context window is too long', len(prompt_prefix_then))
+            if len(prompt_prefix_then) > 4*4096-256 and self.gpt_type == 'gpt-3.5-turbo-16k':
                 print('Context window is too long', len(prompt_prefix_then))
             if len(prompt_prefix_then) > 32*1024-256 and self.gpt_type == 'gpt-4':
                 print('Context window is too long', len(prompt_prefix_then))
             
             opportunities = 10
             while (opportunities):
-                if self.gpt_type == 'gpt-4':
-                    rc = self.chatgpt.completion(prompt_prefix_caption, n=1, max_tokens=256, model='gpt-4')
-                    # rc = chatgpt.completion(prompt_prefix_then, n=1, max_tokens=256, model='gpt-4')
-                else:
-                    rc = self.chatgpt.completion(prompt_prefix_then, n=1, max_tokens=256) #TODO add ChatGPT 16K
+                rc = self.chatgpt.completion(prompt_prefix_caption, n=1, max_tokens=256, model=self.gpt_type) #TODO add ChatGPT 16K
+                # rc = self.chatgpt.completion(prompt_prefix_then, n=1, max_tokens=256, model=self.gpt_type) #TODO add ChatGPT 16K
                 if rc == []:
                     time.sleep(1)
                     opportunities -= 1
