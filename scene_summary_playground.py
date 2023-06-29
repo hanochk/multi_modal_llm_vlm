@@ -7,9 +7,9 @@ from request_for_mdf_summary import SummarizeScene
 sys.path.insert(0, "/notebooks/fast_demo/")
 sys.path.insert(0, "/notebooks/fast_demo/vidarts_advanced_main/")
 
-from vidarts_advanced_main.microservices.blip2.blip2_service import BLIP2Service
 
 """
+from vidarts_advanced_main.microservices.blip2.blip2_service import BLIP2Service
 blip2_service = BLIP2Service("http://209.51.170.37:8087/infer")
 
 def callback_caption_extract(url):
@@ -42,6 +42,12 @@ add_action = True
 
 results = list()
 all_movie_id = list()
+# if 1:
+#     all_movie_id.append('Movies/7417592353856606351')
+#     all_movie_id.append('Movies/7417592353856606351')
+#     all_movie_id.append('Movies/7417592353856606351')
+#     all_movie_id.append('Movies/7417592353856606351')
+
 all_movie_id.append('Movies/-6372550222147686303')
 all_movie_id.append('Movies/889658032723458366')
 all_movie_id.append('Movies/-3323239468660533929') #actionclipautoautotrain00616.mp4
@@ -61,6 +67,8 @@ for movie_id in all_movie_id:
         frame_boundary = [[197, 320]]
     if movie_id == 'Movies/6293447408186786707':
         frame_boundary = [[1035, 1290]]
+    if movie_id == 'Movies/-3323239468660533929':
+        frame_boundary = [[195, 1446]]
 
 
 

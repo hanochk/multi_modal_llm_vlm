@@ -1,7 +1,7 @@
 # export PYTHONPATH=/notebooks/pip_install/
 # pip install -U transformers
 
-
+# export GEVENT_SUPPORT=True for debug in flask mode 
 import os
 from database.arangodb import NEBULA_DB
 from typing import NamedTuple
@@ -10,6 +10,7 @@ import time
 from nebula3_experiments.vg_eval import VGEvaluation  # in case error of "Failed to import transformers, cannot import name 'DEFAULT_CIPHERS' from 'urllib3.util.ssl_"  : then pip install requests==2.29.0
 from typing import Union
 from sklearn.cluster import KMeans
+import tqdm
 os.environ["TRANSFORMERS_CACHE"] = "/storage/hft_cache"
 os.environ["TORCH_HOME"] = "/storage/torch_cache"
 os.environ["CONFIG_NAME"] = "giltest"
@@ -155,6 +156,9 @@ class SummarizeScene():
 
 # pre_defined_mdf_in_frame_no : given specific frames to process over that matches MDF file name 
     def summarize_scene_forward(self, movie_id: str, frame_boundary: list[list]= [], caption_type='vlm'):
+
+        print("summarize_scene_forward : movie_id {} frame_boundary {} caption_type {}".format(movie_id, frame_boundary, caption_type))
+
         if caption_type != 'vlm' and caption_type != 'dense_caption':
             print("Unknown caption type option given : {} but should be (vlm/dense_caption)".format(caption_type))
             return
@@ -201,8 +205,8 @@ class SummarizeScene():
             print(e)        
             return -1, -1
 # Actors name 
-        man_names = list(np.unique(['James', 'Michael', 'Tom', 'George' ,'Nicolas', 'John', 'daniel', 'Henry', 'Jack', 'Leo', 'Oliver']))
-        woman_names = list(np.unique(['Susan', 'Jennifer', 'Eileen', 'Sandra', 'Emma', 'Charlotte', 'Mia']))
+        man_names = list(np.unique(['James', 'Allan', 'Ron', 'George' ,'Nicolas', 'John', 'daniel', 'Henry', 'Jack', 'Leo', 'Oliver']))
+        woman_names = list(np.unique(['Jane', 'Jennifer', 'Eileen', 'Sandra', 'Emma', 'Charlotte', 'Mia']))
         celeb_id_name_dict = dict()
         if rc_reid_fusion:
             print("Found actors names in DB")            
@@ -210,6 +214,7 @@ class SummarizeScene():
             for f in celeb_id_name:
                 celeb_id_name_dict.update(f)   # Uniqeness actor name dict         
 
+        print("Celeb list", celeb_id_name_dict)
         all_ids = list()
         # all_scene = list()
         id_prior_knowledge_among_many = dict()
@@ -229,7 +234,7 @@ class SummarizeScene():
             scene_top_k_frequent = ' and or '.join(semantic_similar_places)
 
 
-        for ix, frame_num in enumerate(mdf_no):
+        for ix, frame_num in enumerate(tqdm.tqdm(mdf_no)):
                 
             mid = MovieImageId(movie_id=movie_id, frame_num=frame_num)
             obj = nebula_db.get_movie_frame_from_collection(mid, VISUAL_CLUES_COLLECTION)
@@ -264,7 +269,7 @@ class SummarizeScene():
         # Movies/-6576299517238034659 'a man in a car looking at Susan in the back seat" However there only 2 IDs "a man in a car looking at a woman in the back seat" no woman!! ''two men in a red car, one is driving and the other is driving'' but only 1 ID is recognized so ? 
                             all_ids.extend([ids['id'] for ids in ids_n])
                             # Gender exclusive
-                            male_str = ['man', 'person', 'boy', 'human']
+                            male_str = ['man', 'person', 'boy', 'human', 'someone']  #TODO add 'someone' to man/woman if they have celeb name remove the "a boy"
                             female_str = ['woman', 'lady' , 'girl']
                             many_person_str = ['men', 'women', 'person', 'people']
 
@@ -573,7 +578,7 @@ def get_few_shot_prompt_paragraph_based_to_tuple_4K(query_paragraph: str, scene:
 
     if uniq_id_prior_put_in_caption_end:
         epilog = '''Video captions: {}{}. Video Summary: '''
-        suffix_prior = '''. The captions are noisy and sometimes include people who are not there. We know for certain there are exactly {} main characters in the scene. Tell what they are doing'''.format(n_uniq_ids)
+        suffix_prior = '''. The captions are noisy and sometimes include people who are not there. We know for certain there are exactly {} main characters in the scene. Tell what they are doing and thier names'''.format(n_uniq_ids)
         epilog = epilog.format(query_paragraph, suffix_prior)
     else:
         epilog = '''Video captions: {}. Video Summary: '''
@@ -653,11 +658,11 @@ def main():
     results = list()
     all_movie_id = list()
 
+    if add_action:
+        all_movie_id.append('Movies/7023181708619934815')
     all_movie_id.append('Movies/-6372550222147686303')
     all_movie_id.append('Movies/-3323239468660533929') #actionclipautoautotrain00616.mp4
     all_movie_id.append('Movies/-6372550222147686303')
-    if add_action:
-        all_movie_id.append('Movies/7023181708619934815')
     all_movie_id.append('Movies/889658032723458366')
     all_movie_id.append('Movies/-6576299517238034659')
     all_movie_id.append('Movies/-5723319113316714990')
@@ -680,12 +685,15 @@ def main():
         if movie_id == 'Movies/6293447408186786707':
             frame_boundary = [[1035, 1290]]
 
-        scn_summ = summarize_scene.summarize_scene_forward(movie_id, frame_boundary)
+        scn_summ = summarize_scene.summarize_scene_forward(movie_id, frame_boundary, caption_type='dense_caption')
         # scn_summ = summarize_scene.summarize_scene_forward(movie_id) # for all clip w/o frame boundaries 
 
         print("Movie: {} Scene summary : {}".format(movie_id, scn_summ))
 
-        results.append({'movie_id':movie_id, 'summary': scn_summ, 'movie_name':movie_name, 'prompt': prompt_prefix_then, 'mdf_no': mdf_no})
+        # results.append({'movie_id':movie_id, 'summary': scn_summ, 'movie_name':movie_name, 'prompt': prompt_prefix_then, 'mdf_no': mdf_no})
+        results.append({'movie_id':movie_id, 'summary': scn_summ, 
+                        'movie_name':summarize_scene.movie_name, 'prompt_prefix_caption' : summarize_scene.prompt_prefix_caption})
+
     df = pd.DataFrame(results)
     df.to_csv(os.path.join(result_path, csv_file_name), index=False)
 
