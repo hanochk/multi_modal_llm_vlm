@@ -3,7 +3,7 @@
 
 # export GEVENT_SUPPORT=True for debug in flask mode 
 import os
-from database.arangodb import NEBULA_DB
+from database.arangodb import NEBULA_DB, DBBase
 from typing import NamedTuple
 from nebula3_experiments.prompts_utils import *
 import time
@@ -57,6 +57,15 @@ def query(payload, model_id, api_token):
 	response = requests.post(API_URL, headers=headers, json=payload)
 	return response.json()
 
+def get_input_type_from_db(pipeline_id, collection):
+    nre = DBBase()
+    pipeline_data = nre.get_doc_by_key({'_key': pipeline_id}, collection)
+    if pipeline_data:
+        if "dataset" in pipeline_data["inputs"]["videoprocessing"]:
+            input_type = pipeline_data["inputs"]["videoprocessing"]["dataset"]["type"]
+        else:
+            input_type = pipeline_data["inputs"]["videoprocessing"]["movies"][0]["type"]
+    return input_type
 
 class SummarizeScene():
     def __init__(self, prompting_type: str='few_shot', gpt_type: str='gpt-3.5-turbo-16k',semantic_token_deduplication: bool=True,
@@ -196,6 +205,10 @@ class SummarizeScene():
         all_obj_LLM_OUTPUT_COLLECTION_cand_re_id = list()
         try:
             rc_movie_id = nebula_db.get_doc_by_key({'_id': movie_id}, MOVIES_COLLECTION) # + scene_elements
+            input_type = get_input_type_from_db(rc_movie_id['pipeline_id'], "pipelines")
+            if input_type == 'image':
+                print("Movie_id {} of image is not supported but only videos".format(movie_id))
+                return -1, -1
             # scene_elements = rc_movie_id['scene_elements']
             movie_name = os.path.basename(rc_movie_id['url_path'])
             self.movie_name = movie_name
@@ -709,4 +722,17 @@ CHAT_GPT_MODEL = 'gpt-3.5-turbo'
 'gpt-4-32k'
 'gpt-4-32k-0314'
 'gpt-4'
+
+input_type = self.get_input_type_from_db(pipeline_id, "pipelines")
+from database.arangodb import DBBase
+def get_input_type_from_db(pipeline_id, collection):
+    nre = DBBase()
+    pipeline_data = nre.get_doc_by_key({'_key': pipeline_id}, collection)
+    if pipeline_data:
+        if "dataset" in pipeline_data["inputs"]["videoprocessing"]:
+            input_type = pipeline_data["inputs"]["videoprocessing"]["dataset"]["type"]
+        else:
+            input_type = pipeline_data["inputs"]["videoprocessing"]["movies"][0]["type"]
+    return input_type
+
 """
