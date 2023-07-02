@@ -8,7 +8,6 @@ sys.path.insert(0, "/notebooks/fast_demo/")
 sys.path.insert(0, "/notebooks/fast_demo/vidarts_advanced_main/")
 
 
-"""
 from vidarts_advanced_main.microservices.blip2.blip2_service import BLIP2Service
 blip2_service = BLIP2Service("http://209.51.170.37:8087/infer")
 
@@ -30,8 +29,9 @@ def callback_caption_extract(url):
     
 
     return outputs[0]
-"""
+
 # summarize_scene = SummarizeScene(caption_callback=callback_caption_extract)
+# summarize_scene = SummarizeScene(gpt_type='gpt-4')
 summarize_scene = SummarizeScene()
 
 unique_run_name = str(int(time.time()))
@@ -48,11 +48,15 @@ all_movie_id = list()
 #     all_movie_id.append('Movies/7417592353856606351')
 #     all_movie_id.append('Movies/7417592353856606351')
 
-all_movie_id.append('Movies/-6372550222147686303')
-all_movie_id.append('Movies/889658032723458366')
-all_movie_id.append('Movies/-3323239468660533929') #actionclipautoautotrain00616.mp4
+# all_movie_id.append('Movies/7891527252242080923') # image just check robustness
 if add_action:
     all_movie_id.append('Movies/7023181708619934815')
+
+all_movie_id.append('Movies/-7594388714349439611') # Kevin spacy wuth daugther photographed by her friend 
+
+all_movie_id.append('Movies/-6372550222147686303')
+all_movie_id.append('Movies/889658032723458366')
+all_movie_id.append('Movies/-3323239468660533929') #actionclipautoautotrain00616.mp4 man walking downa the strret passong newspaper stand and go to booth
 all_movie_id.append('Movies/-6372550222147686303')
 all_movie_id.append('Movies/-6576299517238034659')
 all_movie_id.append('Movies/-5723319113316714990')
@@ -61,6 +65,9 @@ all_movie_id.append('Movies/6293447408186786707')
 
 for movie_id in all_movie_id:
     frame_boundary = []
+
+    if movie_id == 'Movies/-7594388714349439611':
+        frame_boundary = [[89, 1721]]
     if movie_id == 'Movies/-6372550222147686303':
         frame_boundary = [[834, 1181]]
     if movie_id == 'Movies/-5723319113316714990':
@@ -73,8 +80,8 @@ for movie_id in all_movie_id:
 
 
 
-    # scn_summ = summarize_scene.summarize_scene_forward(movie_id, frame_boundary, caption_type='dense_caption')
-    scn_summ = summarize_scene.summarize_scene_forward(movie_id, frame_boundary)
+    scn_summ = summarize_scene.summarize_scene_forward(movie_id, frame_boundary, caption_type='dense_caption')
+    # scn_summ = summarize_scene.summarize_scene_forward(movie_id, frame_boundary)
     # scn_summ = summarize_scene.summarize_scene_forward(movie_id) # for all clip w/o frame boundaries 
     print("Movie: {} Scene summary : {}".format(movie_id, scn_summ))
     if scn_summ != -1:
