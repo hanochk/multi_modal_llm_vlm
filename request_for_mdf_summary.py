@@ -175,9 +175,10 @@ class SummarizeScene():
         return scene_top_k_frequent
 
 # pre_defined_mdf_in_frame_no : given specific frames to process over that matches MDF file name 
-    def summarize_scene_forward(self, movie_id: str, frame_boundary: list[list]= [], caption_type='vlm', append_to_db: bool=True):
+    def summarize_scene_forward(self, movie_id: str, frame_boundary: list[list]= [], caption_type='vlm', append_to_db: bool=False):
 
         print("summarize_scene_forward : movie_id {} frame_boundary {} caption_type {}".format(movie_id, frame_boundary, caption_type))
+        
         self.append_to_db = append_to_db
         if caption_type != 'vlm' and caption_type != 'dense_caption':
             print("Unknown caption type option given : {} but should be (vlm/dense_caption)".format(caption_type))
@@ -492,9 +493,38 @@ class SummarizeScene():
         return rc[0], mdf_no
 
     def _insert_json_to_db(self, movie_id:str, scene_summ: str, mdf_no: list):
-        if self.append_to_db:
-            curr_json = nebula_db.get_doc_by_key({'movie_id': movie_id}, self.collection_name)            
         combined_json = {'movie_id': movie_id, 'SM_MDF': mdf_no, 'scene_summary': scene_summ}
+        if self.append_to_db:
+            curr_json = nebula_db.get_doc_by_key({'movie_id': movie_id}, self.collection_name)
+            if curr_json:
+                if len(curr_json['SM_MDF']) == 1:  # 1st time
+                    sm_mdf = list()
+                    sm_mdf = [curr_json['SM_MDF']]
+                    sm_mdf.append(mdf_no)
+
+                    summy = list()
+                    summy = [curr_json['scene_summary']]
+                    summy.append(scene_summ)
+
+                    # sm_mdf = list()
+                    # sm_mdf.append({ '0' : curr_json['SM_MDF']})
+                    # sm_mdf.append({ '1' : mdf_no})
+
+                    # summy = list()
+                    # summy.append({ '0' : curr_json['scene_summary']})  
+                    # summy.append({ '1' : scene_summ})  
+                    # summy.append(scene_summ)
+
+                    combined_json = {'movie_id': movie_id, 'SM_MDF': sm_mdf, 'scene_summary': summy}
+                elif len(curr_json['SM_MDF']) == 2: #cont aggregation
+                    curr_json['SM_MDF'].append(mdf_no)
+                    curr_json['scene_summary'].append(scene_summ)
+                    combined_json = curr_json
+                else:
+                    print("_insert_json_to_db unknown type and self.append_to_db = ", self.append_to_db)
+            else:
+                print("Asked to append but no record has found hence just overwrite!!! movie_id:", movie_id)
+
         res = nebula_db.write_doc_by_key(combined_json, self.collection_name, overwrite=True, key_list=['movie_id'])
         print("Successfully inserted to database. Collection name: {}".format(self.collection_name))
 
