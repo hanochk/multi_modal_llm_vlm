@@ -2,7 +2,7 @@ import os
 import sys
 import pandas as pd
 import time
-from request_for_mdf_summary import SummarizeScene, callback_caption_extract
+from request_for_mdf_summary import SummarizeScene
 
 
 # summarize_scene = SummarizeScene(gpt_type='gpt-4')
@@ -55,7 +55,7 @@ for movie_id in all_movie_id:
 
 
 
-    scn_summ = summarize_scene.summarize_scene_forward(movie_id, frame_boundary, caption_type='vlm', caption_callback=callback_caption_extract)
+    scn_summ = summarize_scene.summarize_scene_forward(movie_id, frame_boundary, caption_type='blip2')
     # scn_summ = summarize_scene.summarize_scene_forward(movie_id, frame_boundary)
     # scn_summ = summarize_scene.summarize_scene_forward(movie_id) # for all clip w/o frame boundaries 
     print("Movie: {} Scene summary : {}".format(movie_id, scn_summ))

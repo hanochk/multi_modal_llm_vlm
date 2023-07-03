@@ -203,17 +203,17 @@ class SummarizeScene():
 
 # pre_defined_mdf_in_frame_no : given specific frames to process over that matches MDF file name 
     def summarize_scene_forward(self, movie_id: str, frame_boundary: list[list]= [], 
-                                caption_type='vlm', append_to_db: bool=False, caption_callback=None):
+                                caption_type='vlm', append_to_db: bool=False):
 
         print("summarize_scene_forward : movie_id {} frame_boundary {} caption_type {}".format(movie_id, frame_boundary, caption_type))
         
         self.append_to_db = append_to_db
-        if caption_type != 'vlm' and caption_type != 'dense_caption' and not(caption_callback):
+        if caption_type != 'vlm' and caption_type != 'dense_caption' and caption_type != 'blip2':
             print("Unknown caption type option given : {} but should be (vlm/dense_caption)".format(caption_type))
-            return
+            return -1, -1
 
-        if caption_callback and caption_type != 'vlm':
-            print("You gave callback function for VLM but not defining vlm asan option !!!!!")
+        # if caption_callback and caption_type != 'vlm':
+        #     print("You gave callback function for VLM but not defining vlm asan option !!!!!")
 
         if frame_boundary != []:
             if not (any(isinstance(el, list) for el in frame_boundary)):
@@ -223,7 +223,7 @@ class SummarizeScene():
             for scn_frame in range(len(frame_boundary)):
                 if len(frame_boundary[scn_frame]) == 2:
                     summ, mdf_no = self._summarize_scene_forward_scene(movie_id, frame_boundary[scn_frame], 
-                                        caption_type=caption_type, caption_callback=caption_callback)
+                                        caption_type=caption_type)
                     all_summ.append(summ)
                     all_mdf_no.append(mdf_no)
                 else:
@@ -233,16 +233,14 @@ class SummarizeScene():
             
             return all_summ
         else:
-            summ, mdf_no = self._summarize_scene_forward_scene(movie_id, caption_type=caption_type, caption_callback=caption_callback)
+            summ, mdf_no = self._summarize_scene_forward_scene(movie_id, caption_type=caption_type)
             if self.write_res_to_db:
                 self._insert_json_to_db(movie_id, summ, mdf_no)
             
             return summ
         
 
-    def _summarize_scene_forward_scene(self, movie_id: str, frame_boundary: list[int]= [], caption_type:str= 'vlm', caption_callback=None):
-
-        self.caption_callback = caption_callback
+    def _summarize_scene_forward_scene(self, movie_id: str, frame_boundary: list[int]= [], caption_type:str= 'vlm'):
 
         all_caption = list()
         all_reid_caption = list()
@@ -303,13 +301,16 @@ class SummarizeScene():
             obj = nebula_db.get_movie_frame_from_collection(mid, VISUAL_CLUES_COLLECTION)
             
             if caption_type == 'vlm':            
-                if self.caption_callback:
-                    caption = self.caption_callback(obj['url'])
-                else:
-                    caption = obj['global_caption']['blip']
+                caption = obj['global_caption']['blip']
+                # if self.caption_callback:
+                #     caption = self.caption_callback(obj['url'])
+                # else:
+                #     caption = obj['global_caption']['blip']
             elif caption_type == 'dense_caption':
                 caption = nebula_db.get_movie_frame_from_collection(mid,LLM_OUTPUT_COLLECTION)['candidate']
                 all_obj_LLM_OUTPUT_COLLECTION_cand.append(caption)
+            elif caption_type == 'blip2':
+                caption = callback_caption_extract(obj['url'])
             else:
                 raise 
                 
