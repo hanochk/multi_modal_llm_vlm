@@ -36,6 +36,33 @@ from huggingface_hub.inference_api import InferenceApi
 import requests
 
 import importlib
+
+
+#sys.path.insert(0, "/notebooks/fast_demo/")
+#sys.path.insert(0, "/notebooks/fast_demo/vidarts_advanced_main/")
+
+
+from blip2_service import BLIP2Service
+blip2_service = BLIP2Service("http://209.51.170.37:8087/infer")
+
+def callback_caption_extract(url):
+    # # Inputs
+    texts = [""]
+    # bboxes = [[53.04999923706055, 199.6999969482422, 127.80999755859375, 396.29998779296875], [100.77999877929688, 209.41000366210938, 170.8800048828125, 380.7200012207031], [632.1799926757812, 124.19999694824219, 1019.760009765625, 743.0499877929688], [1599.1800537109375, 372.8900146484375, 1624.800048828125, 401.55999755859375], [1780.93994140625, 332.8999938964844, 1864.1199951171875, 438.6600036621094], [1406.1400146484375, 331.239990234375, 1527.050048828125, 444.1300048828125], [1610.6300048828125, 349.67999267578125, 1672.9599609375, 440.4100036621094], [1542.489990234375, 348.260009765625, 1655.1400146484375, 442.3699951171875], [744.3300170898438, 520.1500244140625, 843.3699951171875, 748.6900024414062], [996.4600219726562, 220.19000244140625, 1397.4300537109375, 940.010009765625], [979.1500244140625, 620.7100219726562, 1524.0, 948.0], [18.440000534057617, 727.5999755859375, 956.8499755859375, 948.969970703125], [928.1699829101562, 759.6500244140625, 1581.5799560546875, 945.5599975585938]]
+    opportunities = 10
+    while (opportunities):
+        outputs = blip2_service.get_url_response(url, texts)
+        if not outputs:
+            time.sleep(1)
+            opportunities -= 1
+            print("BLIP2 service may be down")
+            continue
+        else:
+            break
+
+    return outputs[0]
+
+
 print(importlib.metadata.version('openai'))
 
 def flatten(lst): return [x for l in lst for x in l]
@@ -49,6 +76,7 @@ os.environ["HUGGINGFACEHUB_API_TOKEN"] = "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"
 #     hf_model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-ul2", device_map="auto", torch_dtype=torch.bfloat16)
 #     tokenizer = AutoTokenizer.from_pretrained("google/flan-ul2")
 #     model = HuggingFaceLLM(hf_model, tokenizer)
+
 
 api_token = os.environ["HUGGINGFACEHUB_API_TOKEN"]
 nre = DBBase()
@@ -72,7 +100,7 @@ def get_input_type_from_db(pipeline_id, collection):
 
 class SummarizeScene():
     def __init__(self, prompting_type: str='few_shot', gpt_type: str='gpt-3.5-turbo-16k',semantic_token_deduplication: bool=True,
-                    min_shots_for_semantic_similar_dedup: int=40, write_res_to_db: bool=True, caption_callback=None, 
+                    min_shots_for_semantic_similar_dedup: int=40, write_res_to_db: bool=True,  
                     verbose: bool=False):
         
         self.append_to_db = False
@@ -81,7 +109,6 @@ class SummarizeScene():
         self.prompting_type = prompting_type
         self.semantic_token_deduplication = semantic_token_deduplication
         self.verbose = verbose
-        self.caption_callback = caption_callback
         self.one_shot_context_ex_prefix_summary = '''Video Summary: 3 persons, in a room, Susan, Michael, & Tom. They look strange, Tom with a giant head, michael with a mask, one of them is giant. The three people appear very tense as they look around frantically. '''
         self.one_shot_context_ex_prefix_caption = '''Caption 1: Susan standing in front of a tv screen with a camera. 
                             Caption 2: Michael with a body in the middle of the screen. 
@@ -175,14 +202,18 @@ class SummarizeScene():
         return scene_top_k_frequent
 
 # pre_defined_mdf_in_frame_no : given specific frames to process over that matches MDF file name 
-    def summarize_scene_forward(self, movie_id: str, frame_boundary: list[list]= [], caption_type='vlm', append_to_db: bool=False):
+    def summarize_scene_forward(self, movie_id: str, frame_boundary: list[list]= [], 
+                                caption_type='vlm', append_to_db: bool=False, caption_callback=None):
 
         print("summarize_scene_forward : movie_id {} frame_boundary {} caption_type {}".format(movie_id, frame_boundary, caption_type))
         
         self.append_to_db = append_to_db
-        if caption_type != 'vlm' and caption_type != 'dense_caption':
+        if caption_type != 'vlm' and caption_type != 'dense_caption' and not(caption_callback):
             print("Unknown caption type option given : {} but should be (vlm/dense_caption)".format(caption_type))
             return
+
+        if caption_callback and caption_type != 'vlm':
+            print("You gave callback function for VLM but not defining vlm asan option !!!!!")
 
         if frame_boundary != []:
             if not (any(isinstance(el, list) for el in frame_boundary)):
@@ -191,7 +222,8 @@ class SummarizeScene():
             all_mdf_no = list()
             for scn_frame in range(len(frame_boundary)):
                 if len(frame_boundary[scn_frame]) == 2:
-                    summ, mdf_no = self._summarize_scene_forward_scene(movie_id, frame_boundary[scn_frame], caption_type=caption_type)
+                    summ, mdf_no = self._summarize_scene_forward_scene(movie_id, frame_boundary[scn_frame], 
+                                        caption_type=caption_type, caption_callback=caption_callback)
                     all_summ.append(summ)
                     all_mdf_no.append(mdf_no)
                 else:
@@ -201,14 +233,16 @@ class SummarizeScene():
             
             return all_summ
         else:
-            summ, mdf_no = self._summarize_scene_forward_scene(movie_id, caption_type=caption_type)
+            summ, mdf_no = self._summarize_scene_forward_scene(movie_id, caption_type=caption_type, caption_callback=caption_callback)
             if self.write_res_to_db:
                 self._insert_json_to_db(movie_id, summ, mdf_no)
             
             return summ
         
 
-    def _summarize_scene_forward_scene(self, movie_id: str, frame_boundary: list[int]= [], caption_type:str= 'vlm'):
+    def _summarize_scene_forward_scene(self, movie_id: str, frame_boundary: list[int]= [], caption_type:str= 'vlm', caption_callback=None):
+
+        self.caption_callback = caption_callback
 
         all_caption = list()
         all_reid_caption = list()
@@ -230,13 +264,18 @@ class SummarizeScene():
         except Exception as e:
             print(e)        
             return -1, -1
+
+        mdf_no = sorted(flatten(rc_movie_id['mdfs']))
+        if frame_boundary != []:
+            mdf_no = mdf_no[np.where(np.array(mdf_no) == frame_boundary[0])[0][0] :1 + np.where(np.array(mdf_no) == frame_boundary[1])[0][0]]
+
 # Actors name 
         man_names = list(np.unique(['James', 'Allan', 'Ron', 'George' ,'Nicolas', 'John', 'daniel', 'Henry', 'Jack', 'Leo', 'Oliver']))
         woman_names = list(np.unique(['Jane', 'Jennifer', 'Eileen', 'Sandra', 'Emma', 'Charlotte', 'Mia']))
         celeb_id_name_dict = dict()
         if rc_reid_fusion:
             print("Found actors names in DB")            
-            celeb_id_name  = [{int(rec['rois'][0]['face_id']): rec['rois'][0]['reid_name']} for rec in rc_reid_fusion]
+            celeb_id_name  = [{int(rec['rois'][0]['face_id']): rec['rois'][0]['reid_name']} for rec in rc_reid_fusion if (rec['frame_num'] >=mdf_no[0] and rec['frame_num'] <=mdf_no[-1])]
             for f in celeb_id_name:
                 if len(list(f.values())[0]) > 0: # sometimes dict has key and value is ''
                     celeb_id_name_dict.update(f)   # Uniqeness actor name dict         
@@ -246,10 +285,6 @@ class SummarizeScene():
         all_ids_dummy_and_celeb_names = list()
         # all_scene = list()
         id_prior_knowledge_among_many = dict()
-        mdf_no = sorted(flatten(rc_movie_id['mdfs']))
-
-        if frame_boundary != []:
-            mdf_no = mdf_no[np.where(np.array(mdf_no) == frame_boundary[0])[0][0] :1 + np.where(np.array(mdf_no) == frame_boundary[1])[0][0]]
 
         semantic_similar_places = self._places_semantic_dedup(mdf_no, movie_id=movie_id)
 # is indoor 
@@ -465,7 +500,7 @@ class SummarizeScene():
                 else:
                     break
 
-        elif self.gpt_type == 'chat_gpt_3.5' or self.gpt_type == 'gpt-4' or self.gpt_type == 'gpt-3.5-turbo-16k':
+        elif self.gpt_type == 'chat_gpt_3.5' or self.gpt_type == 'gpt-4' or self.gpt_type == 'gpt-3.5-turbo-16k': # TODO if prompt is short than TH than use CHAT-GPT rather than 16K
             if len(prompt_prefix_then) > 4096-256 and self.gpt_type == 'chat_gpt_3.5':
                 print('Context window is too long', len(prompt_prefix_then))
             if len(prompt_prefix_then) > 4*4096-256 and self.gpt_type == 'gpt-3.5-turbo-16k':
