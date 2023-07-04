@@ -16,8 +16,8 @@ add_action = True
 
 results = list()
 all_movie_id = list()
-# if 1:
-#     all_movie_id.append('Movies/7417592353856606351')
+if 0:
+    all_movie_id.append('Movies/7417592353856606351')
 #     all_movie_id.append('Movies/7417592353856606351')
 #     all_movie_id.append('Movies/7417592353856606351')
 #     all_movie_id.append('Movies/7417592353856606351')
@@ -42,7 +42,7 @@ for movie_id in all_movie_id:
     frame_boundary = []
 
     if movie_id == 'Movies/-7594388714349439611':
-        frame_boundary = [[89, 1721]] #[[1880, 2650]]                  #[[89, 1721]]
+        frame_boundary = [[1880, 2650]] #[[89, 1721] ,[1880, 2650]]                  #[[89, 1721]] Kevin spacy  [1880, 2650] # his wife selling houses
     if movie_id == 'Movies/-6372550222147686303':
         frame_boundary = [[834, 1181]]
     if movie_id == 'Movies/-5723319113316714990':

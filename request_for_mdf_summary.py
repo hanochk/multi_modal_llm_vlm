@@ -273,7 +273,7 @@ class SummarizeScene():
         celeb_id_name_dict = dict()
         if rc_reid_fusion:
             print("Found actors names in DB")            
-            celeb_id_name  = [{int(rec['rois'][0]['face_id']): rec['rois'][0]['reid_name']} for rec in rc_reid_fusion if (rec['frame_num'] >=mdf_no[0] and rec['frame_num'] <=mdf_no[-1])]
+            celeb_id_name  = [{int(rec['rois'][0]['face_id']): rec['rois'][0]['reid_name']} for rec in rc_reid_fusion if (int(rec['frame_num']) >=mdf_no[0] and int(rec['frame_num']) <=mdf_no[-1])]
             for f in celeb_id_name:
                 if len(list(f.values())[0]) > 0: # sometimes dict has key and value is ''
                     celeb_id_name_dict.update(f)   # Uniqeness actor name dict         
@@ -334,6 +334,7 @@ class SummarizeScene():
                     if 're-id' in id_rec:
                         ids_n = id_rec['re-id']
                         if ids_n: # in case face but no Re_id, skip
+                            caption_re_id = None
         #TODO @@HK a woaman in 1st scene goes to Id where same ID can appears later under" persons" 
         # Movies/-6576299517238034659 'a man in a car looking at Susan in the back seat" However there only 2 IDs "a man in a car looking at a woman in the back seat" no woman!! ''two men in a red car, one is driving and the other is driving'' but only 1 ID is recognized so ? 
                             all_ids.extend([ids['id'] for ids in ids_n])
@@ -442,7 +443,8 @@ class SummarizeScene():
                                 #     print('Warning Id was found but was not associated n IDS: {} !!!! Caption: {} movie name: {}'.format(len(ids_n), caption, movie_name))
 
         
-                        
+                if not(caption_re_id): # BLIP2 sometimes give caption w/o the ID , but gives will-smith erronously in Top-gun
+                    caption_re_id = caption.lower() + ' and character {} is seen' .format(celeb_id_name_dict.get(ids['id'], ids['id']))
                 all_reid_caption.append(caption_re_id)
             else:
                 all_reid_caption.append(caption)
