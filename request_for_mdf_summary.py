@@ -12,6 +12,7 @@ from typing import Union
 import time
 from sklearn.cluster import KMeans
 import tqdm
+import json
 os.environ["TRANSFORMERS_CACHE"] = "/storage/hft_cache"
 os.environ["TORCH_HOME"] = "/storage/torch_cache"
 os.environ["CONFIG_NAME"] = "default" 
@@ -99,10 +100,14 @@ def get_input_type_from_db(pipeline_id, collection):
     return input_type
 
 class SummarizeScene():
-    def __init__(self, prompting_type: str='few_shot', gpt_type: str='gpt-3.5-turbo-16k',semantic_token_deduplication: bool=True,
+    def __init__(self, prompting_type: str='few_shot', gpt_type: str='gpt-3.5-turbo-16k',
+                    semantic_token_deduplication: bool=True,
                     min_shots_for_semantic_similar_dedup: int=40, write_res_to_db: bool=True,  
                     verbose: bool=False):
         
+        self.prompt_building_type = 'caption_with_numbers'
+        self.gpt_temperatue = 0
+        self._one_place_based_scene = True
         self.append_to_db = False
         self.write_res_to_db = write_res_to_db
         self.gpt_type = gpt_type
@@ -157,8 +162,85 @@ class SummarizeScene():
         self.min_shots_for_semantic_similar_dedup = min_shots_for_semantic_similar_dedup
         self.collection_name = 's4_scene_summary'
 
+        with open(os.path.join('multi_modal','place365_ontology.json'), "r") as f:
+            self.places_fixed_ontology = json.load(f)
+
         return
 
+    def _most_probable_place(self, mdf_no, movie_id, top_k_places=2):
+
+        
+        ranking_method = 'avg_retrive_score'
+        all_scene = list()
+        places_w_score = dict()
+        rc_movie_id = nebula_db.get_doc_by_key({'_id': movie_id}, MOVIES_COLLECTION) # + scene_elements
+        scene_elements = rc_movie_id['scene_elements']
+        for ix, frame_num in enumerate(mdf_no):
+            # TODO per SE clustering 
+            mid = MovieImageId(movie_id=movie_id, frame_num=frame_num)
+            obj = nebula_db.get_movie_frame_from_collection(mid, VISUAL_CLUES_COLLECTION)
+            
+            for x in range(len(obj['global_scenes']['blip'])):
+                place = obj['global_scenes']['blip'][x][0]
+                
+                if not(place in self.places_fixed_ontology):
+                    print("Place omitted out of list", place)
+                    continue
+                if ranking_method == 'avg_retrive_score':
+                    place_sim_score = obj['global_scenes']['blip'][x][1]
+                elif ranking_method == 'avg_retrive_rank':
+                    place_sim_score = x + 1
+                else:
+                    raise
+
+                if isinstance(place_sim_score, str):
+                    place_sim_score = eval(place_sim_score)
+
+                if place in places_w_score:
+                    places_w_score[place].append(place_sim_score)
+                else:
+                    places_w_score[place] = [place_sim_score]
+            # print(place, places_w_score[place])
+
+        place_avg_score = dict()
+
+        if ranking_method == 'avg_retrive_score':
+            max_avg_dist = -1 # Max score
+        elif ranking_method == 'avg_retrive_rank':
+            max_avg_dist = -1000 # Min rank
+        else:
+            raise
+
+        max_avg_dist_place = []
+        for k, v in places_w_score.items():
+
+            if ranking_method == 'avg_retrive_score':
+               score_of_interest = np.sum(np.array(v))/len(mdf_no) # Max score
+            elif ranking_method == 'avg_retrive_rank':
+                score_of_interest = -(np.sum(np.array(v))/len(mdf_no)) /len(v)
+                # score_of_interest = len(v)
+
+            else:
+                raise
+
+            # print("key val ,freq, score_of_interest", k, -np.sum(np.array(v))/len(mdf_no), len(v), score_of_interest)
+            
+            if score_of_interest > max_avg_dist:
+                if ranking_method == 'avg_retrive_score':
+                    max_avg_dist = score_of_interest
+                elif ranking_method == 'avg_retrive_rank':
+                    max_avg_dist = score_of_interest
+                else:
+                    raise
+
+            place_avg_score[k] = score_of_interest
+
+        print("Best", max(place_avg_score, key=place_avg_score.get))
+        top_k_places_avg_score = sorted(place_avg_score, key=place_avg_score.get)[-top_k_places:][::-1]
+        print("Top {} places {}".format(top_k_places, top_k_places_avg_score))
+            
+
+        return top_k_places_avg_score
 # Semantic de-dupllication
     def _places_semantic_dedup(self, mdf_no: list[int], movie_id: str):
         # Place voting
@@ -242,6 +324,7 @@ class SummarizeScene():
 
     def _summarize_scene_forward_scene(self, movie_id: str, frame_boundary: list[int]= [], caption_type:str= 'vlm'):
 
+        caption_type = caption_type.lower()
         all_caption = list()
         all_reid_caption = list()
         all_global_tokens = list()
@@ -284,16 +367,16 @@ class SummarizeScene():
         # all_scene = list()
         id_prior_knowledge_among_many = dict()
 
-        semantic_similar_places = self._places_semantic_dedup(mdf_no, movie_id=movie_id)
-# is indoor 
-        is_indoor = any([True if x in  semantic_similar_places else False for x in ['lab', 'room', 'store', 'indoor', 'office', 'motel', 'home', 'house', 'bar', 'kitchen']])    #https://github.com/zhoubolei/places_devkit/blob/master/categories_places365.txt
-        if is_indoor: # @@HK TODO TOP-gun has faces w/o outdoor hence MDF based on faces only is not a good option hence any() =>all()
-            reid = True
-        if isinstance(semantic_similar_places, (np.ndarray, np.generic)):
-            scene_top_k_frequent = ' and or '.join(list(semantic_similar_places))
+        if self._one_place_based_scene:
+            scene_top_k_frequent = self._most_probable_place(mdf_no, movie_id=movie_id)
         else:
-            scene_top_k_frequent = ' and or '.join(semantic_similar_places)
+            scene_top_k_frequent = self._places_semantic_dedup(mdf_no, movie_id=movie_id)
+        self.scene_top_k_frequent = scene_top_k_frequent
+# is indoor 
 
+        # is_indoor = any([True if x in  scene_top_k_frequent else False for x in ['lab', 'room', 'store', 'indoor', 'office', 'motel', 'home', 'house', 'bar', 'kitchen']])    #https://github.com/zhoubolei/places_devkit/blob/master/categories_places365.txt
+        # if is_indoor: # @@HK TODO TOP-gun has faces w/o outdoor hence MDF based on faces only is not a good option hence any() =>all()
+        #     reid = True
 
         for ix, frame_num in enumerate(tqdm.tqdm(mdf_no)):
                 
@@ -476,6 +559,14 @@ class SummarizeScene():
             # https://github.com/NEBULA3PR0JECT/nebula3_llm_task/blob/8254fb4bb1f81ae87ece51f91cf76d5a778ed6f1/llm_orchestration.py#LL545C31-L548C34
         else:
             raise
+        
+        if self.prompt_building_type == 'caption_and_then_caption':
+            prompt_final = self.prompt_prefix_then
+        elif self.prompt_building_type == 'caption_with_numbers':
+            prompt_final = self.prompt_prefix_caption
+        else:
+            raise ValueError("Not valid option : prompt_building_type")
+
         # concise 
         if self.gpt_type == 'HF_':
             hf_uservice = False
@@ -491,29 +582,32 @@ class SummarizeScene():
                 res = inference(inputs="The goal of life is [MASK].")
 
         elif self.gpt_type == 'text-davinci-003':
-            if len(prompt_prefix_caption) >4096-120: # MosaicML MPT-7B-Instruct 2K (https://huggingface.co/mosaicml/mpt-7b-instruct, https://huggingface.co/spaces/mosaicml/mpt-7b-instruct)
-                print('Context window is too long', len(prompt_prefix_caption))
+            if len(prompt_final) >4096-120: # MosaicML MPT-7B-Instruct 2K (https://huggingface.co/mosaicml/mpt-7b-instruct, https://huggingface.co/spaces/mosaicml/mpt-7b-instruct)
+                print('Context window is too long', len(prompt_final))
             opportunities = 10
             while (opportunities):
-                rc = gpt_execute(prompt_prefix_then, model='text-davinci-003', n=1, max_tokens=256)
+                rc = gpt_execute(prompt_final, model='text-davinci-003', n=1, max_tokens=256) 
                 if rc == []:
                     time.sleep(1)
                     opportunities -= 1
                     continue
                 else:
                     break
-
+                    
         elif self.gpt_type == 'chat_gpt_3.5' or self.gpt_type == 'gpt-4' or self.gpt_type == 'gpt-3.5-turbo-16k': # TODO if prompt is short than TH than use CHAT-GPT rather than 16K
-            if len(prompt_prefix_then) > 4096-256 and self.gpt_type == 'chat_gpt_3.5':
-                print('Context window is too long', len(prompt_prefix_then))
-            if len(prompt_prefix_then) > 4*4096-256 and self.gpt_type == 'gpt-3.5-turbo-16k':
-                print('Context window is too long', len(prompt_prefix_then))
-            if len(prompt_prefix_then) > 32*1024-256 and self.gpt_type == 'gpt-4':
-                print('Context window is too long', len(prompt_prefix_then))
+            if len(prompt_final) > 4096-256 and self.gpt_type == 'chat_gpt_3.5':
+                print('Context window is too long', len(prompt_final))
+                return 'Context window is too long {}'.format(len(prompt_final)), mdf_no
+            if len(prompt_final) > 4*4096-256 and self.gpt_type == 'gpt-3.5-turbo-16k':
+                print('Context window is too long', len(prompt_final))
+                return 'Context window is too long {}'.format(len(prompt_final)), mdf_no
+            if len(prompt_final) > 32*1024-256 and self.gpt_type == 'gpt-4':
+                print('Context window is too long', len(prompt_final))
+                return 'Context window is too long {}'.format(len(prompt_final)), mdf_no
             
             opportunities = 10
             while (opportunities):
-                rc = self.chatgpt.completion(prompt_prefix_caption, n=1, max_tokens=256, model=self.gpt_type) #TODO add ChatGPT 16K
+                rc = self.chatgpt.completion(prompt_final, n=1, max_tokens=256, model=self.gpt_type, temperature=self.gpt_temperatue) # TODO set temp=0 make sure not repetative!!!
                 # rc = self.chatgpt.completion(prompt_prefix_then, n=1, max_tokens=256, model=self.gpt_type) #TODO add ChatGPT 16K
                 if rc == []:
                     time.sleep(1)
@@ -682,34 +776,46 @@ class LLMBase(ABC):
 # Movies/7417592353856606351
 #subsequent captions of key-frames 1 ### 2 
 
-def get_few_shot_prompt_paragraph_based_to_tuple_4K(query_paragraph: str, scene: str, n_uniq_ids: int, 
+def get_few_shot_prompt_paragraph_based_to_tuple_4K(query_paragraph: str, scene_top_k_frequent: str, n_uniq_ids: int, 
                                                     in_context_examples: str, **kwargs):
     few_shot_seperator = kwargs.pop('few_shot_seperator', None)
     prolog_refine = kwargs.pop('prolog_refine', '')
     uniq_id_prior_put_in_caption_end = kwargs.pop('uniq_id_prior_put_in_caption_end', None)
     all_actor_names = kwargs.pop('all_actor_names', None)
     
-    # prolog = '''Summarize the video given the captions that were taken place at {} with {} persons. Start by telling how many persons and what place. Example: Video captions '''
+    if isinstance(scene_top_k_frequent, (np.ndarray, np.generic)):
 
+        if len(scene_top_k_frequent) == 2:
+            scene = 'mainly at {} and secondary at {}'.format(list(scene_top_k_frequent)[0], list(scene_top_k_frequent)[1])
+        else:
+            scene = ' and or '.join(list(scene_top_k_frequent))
+    else:
+        if len(scene_top_k_frequent) == 2:
+            scene = 'mainly at {} and secondary at {}'.format(scene_top_k_frequent[0], scene_top_k_frequent[1])
+        else:
+            scene = ' and or '.join(scene_top_k_frequent)
+
+    # prolog = '''Summarize the video given the captions that were taken place at {} with {} persons. Start by telling how many persons and what place. Example: Video captions '''
+    
 # Alternatives TODO HK@@ : Provide a summary for the following article  ; move the "that were taken place at {}" to the end of prompt ask for action
     if uniq_id_prior_put_in_caption_end:
-        prolog = '''Summarize the video {}given the video captions that were taken place at {}. Example of video captions and summary: '''
+        prolog = '''Summarize the video {}given the video captions that were taken place {}. Example of video captions and summary: '''
         prolog = prolog.format(prolog_refine, scene)
     else:
         if n_uniq_ids > 0:
-            prolog = '''Summarize the video {}given the captions that were taken place at {} with {} persons. '''
+            prolog = '''Summarize the video {}given the captions that were taken place {} with {} persons. '''
             if all_actor_names:
                 prolog += ''' specifically {}'''.format(' and'.join(all_actor_names))
                 prolog += ''' Tell what they are doing. Example of video captions and summary: '''
             prolog = prolog.format(prolog_refine, scene, n_uniq_ids)
         else:
-            prolog = '''Summarize the video {}given the captions that were taken place at {}. Tell what they are doing. Example of video captions and summary: '''
+            prolog = '''Summarize the video {}given the captions that were taken place {}. Tell what they are doing. Example of video captions and summary: '''
             prolog = prolog.format(prolog_refine, scene)
 
        
     if uniq_id_prior_put_in_caption_end:
         epilog = '''Video captions: {}{}. Video Summary: '''
-        suffix_prior = '''. The captions are noisy and sometimes include people who are not there. We know for sure that there are at least {} main characters in the scene.'''.format(n_uniq_ids)
+        suffix_prior = '''The captions are noisy and sometimes include people who are not there. We know for sure that there are at least {} main characters in the scene.'''.format(n_uniq_ids)
         if any(all_actor_names):
             suffix_prior = suffix_prior + ''' Specifically {}. '''.format(' and '.join(all_actor_names))
         suffix_prior = suffix_prior + '''Tell what they are doing and thier names'''
@@ -736,7 +842,7 @@ def get_few_shot_prompt_paragraph_based_to_tuple_4K(query_paragraph: str, scene:
 # pip show openai
 class ChatGptLLM(LLMBase):
     def completion(self, prompt_template: str, *args, n=1, model=CHAT_GPT_MODEL, **kwargs):
-        prompt = prompt_template.format(*args) 
+        prompt = prompt_template.format(*args)
         messages=[
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": prompt}
