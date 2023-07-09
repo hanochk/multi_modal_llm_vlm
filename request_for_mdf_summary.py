@@ -46,7 +46,13 @@ import importlib
 from blip2_service import BLIP2Service
 blip2_service = BLIP2Service("http://209.51.170.37:8087/infer")
 
-def callback_caption_extract(url):
+def is_whole_word_within_caption(substring, string):
+    for word in string.split():
+        if substring == word:
+            return True
+    return False
+
+def callback_blip2_caption_extract(url):
     # # Inputs
     texts = [""]
     # bboxes = [[53.04999923706055, 199.6999969482422, 127.80999755859375, 396.29998779296875], [100.77999877929688, 209.41000366210938, 170.8800048828125, 380.7200012207031], [632.1799926757812, 124.19999694824219, 1019.760009765625, 743.0499877929688], [1599.1800537109375, 372.8900146484375, 1624.800048828125, 401.55999755859375], [1780.93994140625, 332.8999938964844, 1864.1199951171875, 438.6600036621094], [1406.1400146484375, 331.239990234375, 1527.050048828125, 444.1300048828125], [1610.6300048828125, 349.67999267578125, 1672.9599609375, 440.4100036621094], [1542.489990234375, 348.260009765625, 1655.1400146484375, 442.3699951171875], [744.3300170898438, 520.1500244140625, 843.3699951171875, 748.6900024414062], [996.4600219726562, 220.19000244140625, 1397.4300537109375, 940.010009765625], [979.1500244140625, 620.7100219726562, 1524.0, 948.0], [18.440000534057617, 727.5999755859375, 956.8499755859375, 948.969970703125], [928.1699829101562, 759.6500244140625, 1581.5799560546875, 945.5599975585938]]
@@ -105,6 +111,7 @@ class SummarizeScene():
                     min_shots_for_semantic_similar_dedup: int=40, write_res_to_db: bool=True,  
                     verbose: bool=False):
         
+        self.revert_dummy_names = True
         self.prompt_building_type = 'caption_with_numbers'
         self.gpt_temperatue = 0
         self._one_place_based_scene = True
@@ -351,8 +358,6 @@ class SummarizeScene():
             mdf_no = mdf_no[np.where(np.array(mdf_no) == frame_boundary[0])[0][0] :1 + np.where(np.array(mdf_no) == frame_boundary[1])[0][0]]
 
 # Actors name 
-        man_names = list(np.unique(['James', 'Allan', 'Ron', 'George' ,'Nicolas', 'John', 'daniel', 'Henry', 'Jack', 'Leo', 'Oliver']))
-        woman_names = list(np.unique(['Jane', 'Jennifer', 'Eileen', 'Sandra', 'Emma', 'Charlotte', 'Mia']))
         celeb_id_name_dict = dict()
         if rc_reid_fusion:
             print("Found actors names in DB")            
@@ -362,10 +367,8 @@ class SummarizeScene():
                     celeb_id_name_dict.update(f)   # Uniqeness actor name dict         
 
         print("Celeb list", celeb_id_name_dict)
-        all_ids = list()
+        # all_ids = list()
         all_ids_dummy_and_celeb_names = list()
-        # all_scene = list()
-        id_prior_knowledge_among_many = dict()
 
         if self._one_place_based_scene:
             scene_top_k_frequent = self._most_probable_place(mdf_no, movie_id=movie_id)
@@ -377,6 +380,8 @@ class SummarizeScene():
         # is_indoor = any([True if x in  scene_top_k_frequent else False for x in ['lab', 'room', 'store', 'indoor', 'office', 'motel', 'home', 'house', 'bar', 'kitchen']])    #https://github.com/zhoubolei/places_devkit/blob/master/categories_places365.txt
         # if is_indoor: # @@HK TODO TOP-gun has faces w/o outdoor hence MDF based on faces only is not a good option hence any() =>all()
         #     reid = True
+        dummy_name_2_gender = dict()
+        gender_count_for_dummy_names = dict()
 
         for ix, frame_num in enumerate(tqdm.tqdm(mdf_no)):
                 
@@ -385,149 +390,26 @@ class SummarizeScene():
             
             if caption_type == 'vlm':            
                 caption = obj['global_caption']['blip']
-                # if self.caption_callback:
-                #     caption = self.caption_callback(obj['url'])
-                # else:
-                #     caption = obj['global_caption']['blip']
             elif caption_type == 'dense_caption':
                 caption = nebula_db.get_movie_frame_from_collection(mid,LLM_OUTPUT_COLLECTION)['candidate']
                 all_obj_LLM_OUTPUT_COLLECTION_cand.append(caption)
             elif caption_type == 'blip2':
-                caption = callback_caption_extract(obj['url'])
+                caption = callback_blip2_caption_extract(obj['url'])
             else:
                 raise 
                 
-            scene = obj['global_scenes']['blip'][0][0]
+            # scene = obj['global_scenes']['blip'][0][0]
             # all_scene.append(scene)
             all_global_tokens.extend([x[0] for x in obj['global_objects']['blip']])
             # mdf_re_id_dict = rc_reid['frames'][ix]
-            mdf_re_id_dict = [x  for x in rc_reid['frames'] if x['frame_num']==frame_num]
+            
+            caption_re_id = self._merge_reid_into_caption(rc_reid=rc_reid, frame_num=frame_num, 
+                                                            caption=caption, all_ids_dummy_and_celeb_names=all_ids_dummy_and_celeb_names,
+                                                            celeb_id_name_dict=celeb_id_name_dict,
+                                                            dummy_name_2_gender=dummy_name_2_gender,
+                                                            gender_count_for_dummy_names=gender_count_for_dummy_names)
 
-            ided_name_are_in_caption = []
-            if celeb_id_name_dict:
-                ided_name_are_in_caption = [v in caption for k,v in celeb_id_name_dict.items() if len(v)!=0][0]
-# TODO for BLIP2 based caption that adds wrong celeb name ided_name_are_in_caption will be empty and it will leak in !!!
-            if (mdf_re_id_dict) and not(ided_name_are_in_caption): #and is_indoor: #places == 'indoor':  # conditioned on man in the scene if places==indoor
-                reid = True
-                assert(mdf_re_id_dict[0]['frame_num'] == frame_num)
-                for id_rec in mdf_re_id_dict: # match many2many girl lady, woman to IDs at first
-                    if 'face_no_id' in id_rec:
-                        pass # TBD
-                        
-                    if 're-id' in id_rec:
-                        ids_n = id_rec['re-id']
-                        if ids_n: # in case face but no Re_id, skip
-                            caption_re_id = None
-        #TODO @@HK a woaman in 1st scene goes to Id where same ID can appears later under" persons" 
-        # Movies/-6576299517238034659 'a man in a car looking at Susan in the back seat" However there only 2 IDs "a man in a car looking at a woman in the back seat" no woman!! ''two men in a red car, one is driving and the other is driving'' but only 1 ID is recognized so ? 
-                            all_ids.extend([ids['id'] for ids in ids_n])
-                            # Gender exclusive
-                            male_str = ['man', 'person', 'boy', 'human', 'someone']  #TODO add 'someone' to man/woman if they have celeb name remove the "a boy"
-                            female_str = ['woman', 'lady' , 'girl']
-                            many_person_str = ['men', 'women', 'person', 'people']
-
-                            is_male = list(compress(male_str, [caption.find(x)>0 for x in male_str]))
-                            is_female = list(compress(female_str, [caption.find(x)>0 for x in female_str]))
-                            ids_dummy_names = []
-                            # if len(ids_n) > 1 or 1:
-                            if 'men' in caption:
-                                ids_dummy_names = [celeb_id_name_dict.get(ids['id'], man_names[ids['id']]) for ids in ids_n]
-                                ids_phrase = ', ' + ' and '.join(ids_dummy_names) + ', '
-                                caption_re_id = caption.replace('men', 'men' + ids_phrase) 
-                            elif 'women' in caption:
-                                ids_dummy_names = [celeb_id_name_dict.get(ids['id'], woman_names[ids['id']]) for ids in ids_n]
-                                ids_phrase = ', ' + ' and '.join(ids_dummy_names) + ', '
-                                caption_re_id = caption.replace('women', 'women' + ids_phrase) 
-                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('women', 'women' + ids_phrase)
-                            elif 'person' in caption:
-                                ids_dummy_names = [celeb_id_name_dict.get(ids['id'], man_names[ids['id']]) for ids in ids_n]
-                                ids_phrase = ', ' + ' and '.join(ids_dummy_names) + ', '
-                                caption_re_id = caption.replace('person', 'person' + ids_phrase)
-                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('person', 'person'  +ids_phrase)
-                            elif 'people' in caption:  # @@HK to test effect  on Top gun re-id_frame0032 (a group of people sitting in an airplane with a man in the middle of the : Id within the people and one is with man need to refine)
-                                ids_dummy_names = [celeb_id_name_dict.get(ids['id'], man_names[ids['id']]) for ids in ids_n]
-                                ids_phrase = ', ' + ' and '.join(ids_dummy_names) + ', '
-                                caption_re_id = caption.replace('people', 'people with' + ids_phrase)
-                            if ids_dummy_names:
-                                all_ids_dummy_and_celeb_names.append(ids_dummy_names)
-                            
-                            
-
-                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('people', 'people'  +ids_phrase)
-# @@TODO : 1st singular IDs man/woman placing than plural and should be mutual exclusive , hence manage a list when you can take out items following placing singular IDS
-# The people will by Id[0] + people and Id[1] instead of man =>gender classification needed, or ID with celeb name can cover up the whole issue
-                            # ids = id_rec['re-id'][0]  # TODO take the relavant Gender based ID out of the IDs in the MDF
-                            for ids in id_rec['re-id']:
-                        # elif len(ids_n) == 1:
-                            # ids = id_rec['re-id'][0]
-                                if 'woman' in caption:
-                                    ids_dummy_names = celeb_id_name_dict.get(ids['id'], woman_names[ids['id']])
-                                    if 'a woman' in caption : 
-                                        caption_re_id = caption.lower().replace('a woman', ids_dummy_names, 1)
-                                        # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a woman', woman_names[ids['id']])
-                                    else:
-                                        caption_re_id = caption.lower().replace('woman', ids_dummy_names, 1)
-                                    all_ids_dummy_and_celeb_names.append([ids_dummy_names])
-                                    # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('woman', woman_names[ids['id']])
-                                elif 'lady' in caption:
-                                    ids_dummy_names = celeb_id_name_dict.get(ids['id'], woman_names[ids['id']])
-                                    if 'a lady' in caption:
-                                        caption_re_id = caption.lower().replace('a lady', ids_dummy_names, 1)
-                                        # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a lady', woman_names[ids['id']])
-                                    else:
-                                        caption_re_id = caption.lower().replace('lady', ids_dummy_names, 1)
-                                    all_ids_dummy_and_celeb_names.append([ids_dummy_names])
-                                        # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('lady', woman_names[ids['id']])
-                                elif 'girl' in caption:
-                                    ids_dummy_names = celeb_id_name_dict.get(ids['id'], woman_names[ids['id']])
-                                    if 'a girl' in caption:
-                                        caption_re_id = caption.lower().replace('a girl', ids_dummy_names, 1)
-                                        # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a girl', woman_names[ids['id']])
-                                    else:
-                                        caption_re_id = caption.replace('girl', ids_dummy_names, 1)
-                                    all_ids_dummy_and_celeb_names.append([ids_dummy_names])
-                                            # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('girl', woman_names[ids['id']])
-                                elif 'man' in caption:
-                                    ids_dummy_names = celeb_id_name_dict.get(ids['id'], man_names[ids['id']])
-                                    if 'a man' in caption:
-                                        caption_re_id = caption.lower().replace('a man', ids_dummy_names, 1)
-                                        # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a man', man_names[ids['id']], 1)# TODO the obj_LLM_OUTPUT_COLLECTION_cand can chnage the a man to the man 
-                                    else:
-                                        caption_re_id = caption.replace('man', ids_dummy_names, 1)
-                                        # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('man', man_names[ids['id']])
-                                    all_ids_dummy_and_celeb_names.append([ids_dummy_names])
-                                elif 'boy' in caption:
-                                    ids_dummy_names = celeb_id_name_dict.get(ids['id'], man_names[ids['id']])
-                                    if 'a boy' in caption:
-                                        caption_re_id = caption.lower().replace('a boy', ids_dummy_names, 1)
-                                        # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a boy', man_names[ids['id']])
-                                    else:
-                                        caption_re_id = caption.replace('boy', ids_dummy_names, 1)
-                                    all_ids_dummy_and_celeb_names.append([ids_dummy_names])
-                                elif 'person' in caption:
-                                    ids_dummy_names = celeb_id_name_dict.get(ids['id'], man_names[ids['id']])
-                                    if 'a person' in caption:
-                                        caption_re_id = caption.lower().replace('a person', ids_dummy_names, 1)
-                                        # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a person', man_names[ids['id']])
-                                    else:
-                                        caption_re_id = caption.replace('person', ids_dummy_names, 1)
-                                    all_ids_dummy_and_celeb_names.append([ids_dummy_names])
-                                        # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('person', man_names[ids['id']])
-                                elif 'human' in caption:
-                                    ids_dummy_names = celeb_id_name_dict.get(ids['id'], man_names[ids['id']])
-                                    if 'a human' in caption:
-                                        caption_re_id = caption.lower().replace('a human', ids_dummy_names, 1)
-                                        # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a human', man_names[ids['id']])
-                                    else:
-                                        caption_re_id = caption.lower().replace('human', ids_dummy_names, 1)
-                                    all_ids_dummy_and_celeb_names.append([ids_dummy_names])
-                                        # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('human', man_names[ids['id']])
-                                # else: # could be found under people/plural list
-                                #     print('Warning Id was found but was not associated n IDS: {} !!!! Caption: {} movie name: {}'.format(len(ids_n), caption, movie_name))
-
-        
-                if not(caption_re_id): # BLIP2 sometimes give caption w/o the ID , but gives will-smith erronously in Top-gun
-                    caption_re_id = caption.lower() + ' and character {} is seen' .format(celeb_id_name_dict.get(ids['id'], ids['id']))
+            if caption_re_id:
                 all_reid_caption.append(caption_re_id)
             else:
                 all_reid_caption.append(caption)
@@ -538,7 +420,18 @@ class SummarizeScene():
         # n_uniq_ids = np.unique(all_ids).shape[0]
         if celeb_id_name_dict:
             re_id_celeb_names = [v for k,v in celeb_id_name_dict.items()]
+            unrecognized_id = np.unique(flatten(all_ids_dummy_and_celeb_names))
+            recognized_id_str = ' and '.join(re_id_celeb_names)
+            if len(re_id_celeb_names) > 0:
+                celeb_id_str = "including {} and".format(recognized_id_str)
+            else:
+                celeb_id_str = ''
+            id_str_summ = "The scene shows {} main characters, {} {} unrecognized one/s".format(unrecognized_id.shape[0] + len(re_id_celeb_names), celeb_id_str, unrecognized_id.shape[0] )
             all_ids_dummy_and_celeb_names.extend([re_id_celeb_names])
+        else:
+            unrecognized_id = np.unique(flatten(all_ids_dummy_and_celeb_names))
+            id_str_summ = "The scene shows {} main unrecognized characters".format(unrecognized_id.shape[0] )
+
         all_actor_names = np.unique(flatten(all_ids_dummy_and_celeb_names))
         n_uniq_ids = len(all_actor_names)
 
@@ -567,6 +460,171 @@ class SummarizeScene():
         else:
             raise ValueError("Not valid option : prompt_building_type")
 
+        gen_summ = self._generate_summry(prompt_final)
+        if self.revert_dummy_names:
+            gen_summ = [gen_summ.replace(k, v) for k,v in dummy_name_2_gender.items()][0]
+
+        if n_uniq_ids >0:
+            gen_summ  = '''{}. {}'''.format(id_str_summ, gen_summ)  # main character. {}'''.format(n_uniq_ids, rc[0]) 
+        
+        return gen_summ, mdf_no
+
+    def _dummy_names_to_gender_create(self, dummy_name_2_gender:dict, ids_dummy_names:str, 
+                                        gender:str, gender_count_for_dummy_names:dict):
+        
+        if ids_dummy_names not in dummy_name_2_gender:
+            # [v if gender in v for k,v in dummy_name_2_gender] # already has a lady or a man
+            if gender in gender_count_for_dummy_names: # this gender has already been counted 
+                gender_count_for_dummy_names[gender] = gender_count_for_dummy_names[gender] + 1
+                dummy_name_2_gender[ids_dummy_names] = gender + '-' + str(gender_count_for_dummy_names[gender])
+            else:
+                dummy_name_2_gender[ids_dummy_names] = gender + '-1'
+                gender_count_for_dummy_names[gender] = 1
+
+
+    def _merge_reid_into_caption(self, rc_reid:dict, frame_num: int, caption: str, 
+                                    all_ids_dummy_and_celeb_names, celeb_id_name_dict: dict, 
+                                    dummy_name_2_gender: dict, gender_count_for_dummy_names:dict):
+        
+        man_names = list(np.unique(['James', 'Allan', 'Ron', 'George' ,'Nicolas', 'John', 'daniel', 'Henry', 'Jack', 'Leo', 'Oliver']))
+        woman_names = list(np.unique(['Jane', 'Jennifer', 'Eileen', 'Sandra', 'Emma', 'Charlotte', 'Mia']))
+
+        mdf_re_id_dict = [x  for x in rc_reid['frames'] if x['frame_num']==frame_num]
+
+        ided_name_are_in_caption = []
+        if celeb_id_name_dict:
+            ided_name_are_in_caption = [v in caption for k,v in celeb_id_name_dict.items() if len(v)!=0][0]
+# TODO for BLIP2 based caption that adds wrong celeb name ided_name_are_in_caption will be empty and it will leak in !!!
+        if (mdf_re_id_dict) and not(ided_name_are_in_caption): #and is_indoor: #places == 'indoor':  # conditioned on man in the scene if places==indoor
+            reid = True
+            assert(mdf_re_id_dict[0]['frame_num'] == frame_num)
+            for id_rec in mdf_re_id_dict: # match many2many girl lady, woman to IDs at first
+                if 'face_no_id' in id_rec:
+                    pass # TBD
+                    
+                if 're-id' in id_rec:
+                    ids_n = id_rec['re-id']
+                    caption_re_id = None
+                    if ids_n: # in case face but no Re_id, skip
+    #TODO @@HK a woaman in 1st scene goes to Id where same ID can appears later under" persons" 
+    # Movies/-6576299517238034659 'a man in a car looking at Susan in the back seat" However there only 2 IDs "a man in a car looking at a woman in the back seat" no woman!! ''two men in a red car, one is driving and the other is driving'' but only 1 ID is recognized so ? 
+                        # all_ids.extend([ids['id'] for ids in ids_n])
+                        # Gender exclusive
+                        male_str = ['man', 'person', 'boy', 'human', 'someone']  #TODO add 'someone' to man/woman if they have celeb name remove the "a boy"
+                        female_str = ['woman', 'lady' , 'girl']
+                        many_person_str = ['men', 'women', 'person', 'people']
+
+                        is_male = list(compress(male_str, [caption.find(x)>0 for x in male_str]))
+                        is_female = list(compress(female_str, [caption.find(x)>0 for x in female_str]))
+                        ids_dummy_names = []
+                        # if len(ids_n) > 1 or 1:
+                        if 'men ' in caption:
+                            ids_dummy_names = [celeb_id_name_dict.get(ids['id'], man_names[ids['id']]) for ids in ids_n]
+                            ids_phrase = ', ' + ' and '.join(ids_dummy_names) + ', '
+                            caption_re_id = caption.replace('men', 'men' + ids_phrase) 
+                        elif 'women ' in caption:
+                            ids_dummy_names = [celeb_id_name_dict.get(ids['id'], woman_names[ids['id']]) for ids in ids_n]
+                            ids_phrase = ', ' + ' and '.join(ids_dummy_names) + ', '
+                            caption_re_id = caption.replace('women', 'women' + ids_phrase) 
+                            # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('women', 'women' + ids_phrase)
+                        elif 'person ' in caption:
+                            ids_dummy_names = [celeb_id_name_dict.get(ids['id'], man_names[ids['id']]) for ids in ids_n]
+                            ids_phrase = ', ' + ' and '.join(ids_dummy_names) + ', '
+                            caption_re_id = caption.replace('person', 'person' + ids_phrase)
+                            # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('person', 'person'  +ids_phrase)
+                        elif 'people ' in caption:  # @@HK to test effect  on Top gun re-id_frame0032 (a group of people sitting in an airplane with a man in the middle of the : Id within the people and one is with man need to refine)
+                            ids_dummy_names = [celeb_id_name_dict.get(ids['id'], man_names[ids['id']]) for ids in ids_n]
+                            ids_phrase = ', ' + ' and '.join(ids_dummy_names) + ', '
+                            caption_re_id = caption.replace('people', 'people with' + ids_phrase)
+                        if ids_dummy_names:
+                            all_ids_dummy_and_celeb_names.append(ids_dummy_names)
+                        
+                        
+
+                            # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('people', 'people'  +ids_phrase)
+# @@TODO : 1st singular IDs man/woman placing than plural and should be mutual exclusive , hence manage a list when you can take out items following placing singular IDS
+# The people will by Id[0] + people and Id[1] instead of man =>gender classification needed, or ID with celeb name can cover up the whole issue
+                        # ids = id_rec['re-id'][0]  # TODO take the relavant Gender based ID out of the IDs in the MDF
+                        for ids in id_rec['re-id']:
+                    # elif len(ids_n) == 1:
+                        # ids = id_rec['re-id'][0]
+                            if 'woman ' in caption:
+                                ids_dummy_names = celeb_id_name_dict.get(ids['id'], woman_names[ids['id']])
+                                if 'a woman' in caption : 
+                                    caption_re_id = caption.lower().replace('a woman', ids_dummy_names, 1)
+                                    # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a woman', woman_names[ids['id']])
+                                else:
+                                    caption_re_id = caption.lower().replace('woman', ids_dummy_names, 1)
+                                all_ids_dummy_and_celeb_names.append([ids_dummy_names])
+                                # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('woman', woman_names[ids['id']])
+                            elif 'lady ' in caption:
+                                ids_dummy_names = celeb_id_name_dict.get(ids['id'], woman_names[ids['id']])
+                                if 'a lady' in caption:
+                                    caption_re_id = caption.lower().replace('a lady', ids_dummy_names, 1)
+                                    # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a lady', woman_names[ids['id']])
+                                else:
+                                    caption_re_id = caption.lower().replace('lady', ids_dummy_names, 1)
+                                all_ids_dummy_and_celeb_names.append([ids_dummy_names])
+                                    # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('lady', woman_names[ids['id']])
+                            elif 'girl ' in caption:
+                                ids_dummy_names = celeb_id_name_dict.get(ids['id'], woman_names[ids['id']])
+                                if 'a girl' in caption:
+                                    caption_re_id = caption.lower().replace('a girl', ids_dummy_names, 1)
+                                    # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a girl', woman_names[ids['id']])
+                                else:
+                                    caption_re_id = caption.replace('girl', ids_dummy_names, 1)
+                                all_ids_dummy_and_celeb_names.append([ids_dummy_names])
+                                        # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('girl', woman_names[ids['id']])
+                            elif is_whole_word_within_caption('man', caption.lower()) or is_whole_word_within_caption("man's", caption.lower()) or is_whole_word_within_caption("a man", caption.lower()): # avoid treating the sign "Burnman Associates" as man
+                                ids_dummy_names = celeb_id_name_dict.get(ids['id'], man_names[ids['id']])
+                                if 'a man' in caption.lower(): # you can't tell for sure if 2 man in caption relate to same man : like two man are driving hence replace man per re_id num
+                                    caption_re_id = caption.lower().replace('a man', ids_dummy_names, 1) #caption.lower().replace('a man', ids_dummy_names, 1).replace('man', ids_dummy_names, 1)
+                                    # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a man', man_names[ids['id']], 1)# TODO the obj_LLM_OUTPUT_COLLECTION_cand can chnage the a man to the man 
+                                else:
+                                    caption_re_id = caption.replace('man', ids_dummy_names, 1)
+                                    # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('man', man_names[ids['id']])
+                                all_ids_dummy_and_celeb_names.append([ids_dummy_names])
+# Only if the Id name is dummy i.e is not one of the celeb  and wasn't registered yet                                
+                                if not(ids_dummy_names in celeb_id_name_dict.values()) and not(ids_dummy_names in dummy_name_2_gender):
+                                    self._dummy_names_to_gender_create(dummy_name_2_gender, ids_dummy_names, 'man', gender_count_for_dummy_names)
+                            elif 'boy ' in caption:
+                                ids_dummy_names = celeb_id_name_dict.get(ids['id'], man_names[ids['id']])
+                                if 'a boy' in caption:
+                                    caption_re_id = caption.lower().replace('a boy', ids_dummy_names, 1)
+                                    # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a boy', man_names[ids['id']])
+                                else:
+                                    caption_re_id = caption.replace('boy', ids_dummy_names, 1)
+                                all_ids_dummy_and_celeb_names.append([ids_dummy_names])
+                            elif 'person ' in caption:
+                                ids_dummy_names = celeb_id_name_dict.get(ids['id'], man_names[ids['id']])
+                                if 'a person' in caption:
+                                    caption_re_id = caption.lower().replace('a person', ids_dummy_names, 1)
+                                    # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a person', man_names[ids['id']])
+                                else:
+                                    caption_re_id = caption.replace('person', ids_dummy_names, 1)
+                                all_ids_dummy_and_celeb_names.append([ids_dummy_names])
+                                    # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('person', man_names[ids['id']])
+                            elif ' human ' in caption:
+                                ids_dummy_names = celeb_id_name_dict.get(ids['id'], man_names[ids['id']])
+                                if 'a human' in caption:
+                                    caption_re_id = caption.lower().replace('a human', ids_dummy_names, 1)
+                                    # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('a human', man_names[ids['id']])
+                                else:
+                                    caption_re_id = caption.lower().replace('human', ids_dummy_names, 1)
+                                all_ids_dummy_and_celeb_names.append([ids_dummy_names])
+                                    # llm_out_cand_re_id = obj_LLM_OUTPUT_COLLECTION_cand.lower().replace('human', man_names[ids['id']])
+                            # else: # could be found under people/plural list
+                            #     print('Warning Id was found but was not associated n IDS: {} !!!! Caption: {} movie name: {}'.format(len(ids_n), caption, movie_name))
+                    
+    
+            if not(caption_re_id) and bool(ids_n): # TODO BLIP2 sometimes give caption w/o the ID , but gives will-smith erronously in Top-gun : no reid only faces w/o id 
+                caption_re_id = caption.lower() + ' and character {} is seen' .format(celeb_id_name_dict.get(ids['id'], ids['id']))
+            if not bool(ids_n):# Faces no ID
+                return caption
+            
+            return caption_re_id
+
+    def _generate_summry(self, prompt_final):
         # concise 
         if self.gpt_type == 'HF_':
             hf_uservice = False
@@ -597,13 +655,13 @@ class SummarizeScene():
         elif self.gpt_type == 'chat_gpt_3.5' or self.gpt_type == 'gpt-4' or self.gpt_type == 'gpt-3.5-turbo-16k': # TODO if prompt is short than TH than use CHAT-GPT rather than 16K
             if len(prompt_final) > 4096-256 and self.gpt_type == 'chat_gpt_3.5':
                 print('Context window is too long', len(prompt_final))
-                return 'Context window is too long {}'.format(len(prompt_final)), mdf_no
+                return 'Context window is too long {}'.format(len(prompt_final))
             if len(prompt_final) > 4*4096-256 and self.gpt_type == 'gpt-3.5-turbo-16k':
                 print('Context window is too long', len(prompt_final))
-                return 'Context window is too long {}'.format(len(prompt_final)), mdf_no
+                return 'Context window is too long {}'.format(len(prompt_final))
             if len(prompt_final) > 32*1024-256 and self.gpt_type == 'gpt-4':
                 print('Context window is too long', len(prompt_final))
-                return 'Context window is too long {}'.format(len(prompt_final)), mdf_no
+                return 'Context window is too long {}'.format(len(prompt_final))
             
             opportunities = 10
             while (opportunities):
@@ -615,14 +673,7 @@ class SummarizeScene():
                     continue
                 else:
                     break
-        
-        if n_uniq_ids >0:
-            if n_uniq_ids == 1:
-                rc[0]  = '''The scene shows {} main character. {}'''.format(n_uniq_ids, rc[0]) 
-            else:
-                rc[0]  = '''The scene shows {} main characters. {}'''.format(n_uniq_ids, rc[0]) 
-        
-        return rc[0], mdf_no
+        return rc[0]
 
     def _insert_json_to_db(self, movie_id:str, scene_summ: str, mdf_no: list):
         combined_json = {'movie_id': movie_id, 'SM_MDF': mdf_no, 'scene_summary': scene_summ}
