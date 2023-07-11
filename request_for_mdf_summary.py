@@ -119,7 +119,7 @@ class SummarizeScene():
         
         self.revert_dummy_names = True
         self.prompt_building_type = 'caption_with_numbers'
-        self.gpt_temperatue = 0
+        self.gpt_temperatue = 0 # 0 causing leaking of the 1-shot into the generation
         self._one_place_based_scene = True
         self.append_to_db = False
         self.write_res_to_db = write_res_to_db
@@ -305,7 +305,7 @@ class SummarizeScene():
         self.append_to_db = append_to_db
         if caption_type != 'vlm' and caption_type != 'dense_caption' and caption_type != 'blip2':
             print("Unknown caption type option given : {} but should be (vlm/dense_caption)".format(caption_type))
-            return -1, -1
+            return -1
 
         # if caption_callback and caption_type != 'vlm':
         #     print("You gave callback function for VLM but not defining vlm asan option !!!!!")
@@ -348,8 +348,8 @@ class SummarizeScene():
             input_type = get_input_type_from_db(rc_movie_id['pipeline_id'], "pipelines")
             if input_type != -1: # if pipeline Id hasn;'t found result is -1
                 if input_type == 'image':
-                    print("Movie_id {} of image is not supported but only videos".format(movie_id))
-                    return -1, -1
+                    print("Movie_id {} type image is not supported but only videos".format(movie_id))
+                    return "Movie_id {} type image is not supported but only videos".format(movie_id), -1
             # scene_elements = rc_movie_id['scene_elements']
             movie_name = os.path.basename(rc_movie_id['url_path'])
             self.movie_name = movie_name
@@ -357,10 +357,13 @@ class SummarizeScene():
             rc_reid_fusion = nebula_db.get_doc_by_key2({'movie_id': movie_id}, FUSION_COLLECTION)
         except Exception as e:
             print(e)        
-            return -1, -1
+            return e, -1
 
         mdf_no = sorted(flatten(rc_movie_id['mdfs']))
         if frame_boundary != []:
+            if np.where(np.array(mdf_no) == frame_boundary[0])[0].size == 0:
+                print('MDF of the given frame boundaries are inccorrect or not found with respect to that movie', frame_boundary)
+                return 'MDF of the given frame boundaries are inccorrect or not found with respect to that movie {}'.format(frame_boundary), -1
             mdf_no = mdf_no[np.where(np.array(mdf_no) == frame_boundary[0])[0][0] :1 + np.where(np.array(mdf_no) == frame_boundary[1])[0][0]]
 
 # Actors name 
@@ -434,14 +437,14 @@ class SummarizeScene():
             else:
                 celeb_id_str = ''
                 print("how come ???")
-            if bool(unrecognized_id):
+            if unrecognized_id.size>0:
                 id_str_summ = "The scene shows {} main characters, {} and {} unrecognized one/s".format(unrecognized_id.shape[0] + len(re_id_celeb_names), celeb_id_str, unrecognized_id.shape[0] )
             else:
                 id_str_summ = "The scene shows {} main characters, {}".format(len(re_id_celeb_names), celeb_id_str)
             # all_ids_dummy_and_celeb_names.extend([re_id_celeb_names])
         else:
             unrecognized_id = np.unique(flatten(all_ids_dummy_and_celeb_names)) # no celeb and no unrecognized i.e no main characters 
-            if unrecognized_id.shape[0]>0:
+            if unrecognized_id.size>0:
                 id_str_summ = "The scene shows {} main unrecognized characters".format(unrecognized_id.shape[0] )
 
         all_actor_names = np.unique(flatten(all_ids_dummy_and_celeb_names))
@@ -452,12 +455,14 @@ class SummarizeScene():
             prompt = '''Summarize the video scene given the captions that were taken place at {} with {} persons. Start by telling how many persons and what place : {} Summary :'''.format(scene_top_k_frequent, n_uniq_ids, seq_caption_w_caption)
             # prompt = "Give a concise summary of the following video scene captions separated by the word 'then':{} Summary :".format(seq_caption)
         elif self.prompting_type == 'few_shot':
+            prolog_refine = ', by 2-3 sentences, '
+            prolog_refine = ', by 3-4 sentences, '
             prompt_prefix_caption = get_few_shot_prompt_paragraph_based_to_tuple_4K(seq_caption_w_caption, scene_top_k_frequent, n_uniq_ids, all_actor_names=all_actor_names, 
                                                     in_context_examples=self.one_shot_context_ex_prefix_caption, few_shot_seperator = '''###''',
-                                                    prolog_refine=', by 2-3 sentences, ', uniq_id_prior_put_in_caption_end=True)
+                                                    prolog_refine=prolog_refine, uniq_id_prior_put_in_caption_end=True)
             prompt_prefix_then = get_few_shot_prompt_paragraph_based_to_tuple_4K(seq_caption, scene_top_k_frequent, n_uniq_ids, all_actor_names=all_actor_names, 
                                                         in_context_examples=self.one_shot_context_ex_prefix_then, few_shot_seperator = '''###''',
-                                                        prolog_refine=', by 2-3 sentences, ', uniq_id_prior_put_in_caption_end=True)
+                                                        prolog_refine=prolog_refine, uniq_id_prior_put_in_caption_end=True)
             
             self.prompt_prefix_caption = prompt_prefix_caption
             self.prompt_prefix_then = prompt_prefix_then
@@ -474,7 +479,8 @@ class SummarizeScene():
 
         gen_summ = self._generate_summry(prompt_final)
         if self.revert_dummy_names and bool(dummy_name_2_gender):
-            gen_summ = [gen_summ.replace(k, v) for k,v in dummy_name_2_gender.items()][-1]
+            for k,v in dummy_name_2_gender.items():
+                gen_summ = gen_summ.replace(k, v)
 
         if n_uniq_ids >0 and self.revert_dummy_names:
             if 'The video features' in gen_summ:
@@ -483,7 +489,7 @@ class SummarizeScene():
                 gen_summ = gen_summ[endof_char_summ+2:]
             gen_summ  = '''{}. {}'''.format(id_str_summ, gen_summ)  # main character. {}'''.format(n_uniq_ids, rc[0]) 
         
-        return gen_summ, mdf_no
+        return gen_summ, mdf_no         
 
     def _dummy_names_to_gender_create(self, dummy_name_2_gender:dict, ids_dummy_names:str, 
                                         gender:str, gender_count_for_dummy_names:dict):
@@ -966,7 +972,7 @@ def get_few_shot_prompt_paragraph_based_to_tuple_4K(query_paragraph: str, scene_
         suffix_prior = '''The captions are noisy and sometimes include people who are not there. We know for sure that there are at least {} main characters in the scene.'''.format(n_uniq_ids)
         if any(all_actor_names):
             suffix_prior = suffix_prior + ''' Specifically {}. '''.format(' and '.join(all_actor_names))
-        suffix_prior = suffix_prior + '''Tell what they are doing and thier names'''
+        suffix_prior = suffix_prior + '''Tell what they are doing, thier names and the theme'''
 
         epilog = epilog.format(query_paragraph, suffix_prior)
     else:
@@ -1003,37 +1009,6 @@ class ChatGptLLM(LLMBase):
 class MovieImageId(NamedTuple):
     movie_id: str
     frame_num: int
-
-def process_benchmark(benchmark_name, **kwargs):
-    results = []
-    if not nebula_db.db.has_collection(EVAL_COLLECTION_NAME):
-        nebula_db.db.create_collection(EVAL_COLLECTION_NAME)
-    benchmark = list(nebula_db.db.collection('Movies').find({'misc.benchmark_name': benchmark_name}))
-    print("Processing {} items".format(len(benchmark)))
-    for mobj in benchmark:
-        assert(mobj['mdfs'] == [[0]])
-        mid = MovieImageId(mobj['_id'],0)
-        curr_key = {'movie_id': mobj['_id'], 'benchmark_name': mobj['misc']['benchmark_name'], 'benchmark_tag': mobj['misc']['benchmark_tag']}
-        curr_doc = nebula_db.get_doc_by_key2(curr_key, EVAL_COLLECTION_NAME)
-        if curr_doc:
-            print("Found existing eval result, moving on: ")
-            # print(curr_doc.pop())
-            continue
-        try:
-            rc = process_recall(mid, **kwargs)
-        except:
-            print("Failed to evaluate mid: {}".format(mid[0]))
-            continue
-        rc['movie_id']=mid[0]
-        rc['benchmark_name']=mobj['misc']['benchmark_name']
-        rc['benchmark_tag']=mobj['misc']['benchmark_tag']
-        print(rc)
-        results.append(rc)
-        rc1 = nebula_db.write_doc_by_key(rc,EVAL_COLLECTION_NAME,key_list=['image_id', 'movie_id', 'benchmark_name','benchmark_tag'])
-        print("Result from writing:")
-        print(rc1)
-    return results
-
 
 def main():
 

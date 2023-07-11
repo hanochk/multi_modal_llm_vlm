@@ -15,13 +15,15 @@ add_action = False
 
 results = list()
 all_movie_id = list()
+
+all_movie_id.append('Movies/-7594388714349439611') # [Kevin spacy with daugther photographed by her friend unrecognized] and 2nd scene[ Wife as real estate agent]
+all_movie_id.append('Movies/6003506574197024663') #  {0: 'Ewan McGregor', 1: 'Ralphie May', 2: 'Alison Lohman'} in the garden fighting 
+all_movie_id.append('Movies/-6372550222147686303')
+all_movie_id.append('Movies/-6576299517238034659') #Two men are sitting in a front-row of a driving car while  (ensen Ackles and Naveen Andrews)
 all_movie_id.append('Movies/2219594956981209558')
 all_movie_id.append('Movies/6293447408186786707')
-all_movie_id.append('Movies/-6576299517238034659') #Two men are sitting in a front-row of a driving car while 
-all_movie_id.append('Movies/-7594388714349439611') # Kevin spacy with daugther photographed by her friend unrecognized
 
 all_movie_id.append('Movies/889658032723458366') #Jensen Ackles, Jensen Atwood, and Naveen Andrews. They are seen sitting around a dining table, enjoying a meal together.
-all_movie_id.append('Movies/-6372550222147686303')
 
 # all_movie_id.append('Movies/7891527252242080923') # image just check robustness
 
@@ -45,15 +47,20 @@ for movie_id in all_movie_id:
         frame_boundary = [[1035, 1290]]
     if movie_id == 'Movies/-3323239468660533929':
         frame_boundary = [[195, 1446]]
+    if movie_id == 'Movies/6003506574197024663':
+        frame_boundary = [[41,626]]
 
-
+# if 1:
+#     movie_id = "Movies/-6576299517238034659"
+#     frame_boundary = [[5, 476], [494, 800]] # false inserting a bug
 
 
     # scn_summ = summarize_scene.summarize_scene_forward(movie_id, frame_boundary, caption_type='blip2')
-    scn_summ = summarize_scene.summarize_scene_forward(movie_id, frame_boundary, caption_type='dense_caption')
+    # scn_summ = summarize_scene.summarize_scene_forward(movie_id, frame_boundary, caption_type='dense_caption')
+    scn_summ = summarize_scene.summarize_scene_forward(movie_id, frame_boundary, caption_type='vlm', append_to_db=True)
     # scn_summ = summarize_scene.summarize_scene_forward(movie_id) # for all clip w/o frame boundaries 
     print("Movie: {} Scene summary : {}".format(movie_id, scn_summ))
-    if scn_summ != -1:
+    if isinstance(scn_summ, list):
         results.append({'movie_id':movie_id, 'summary': scn_summ, 'movie_name':summarize_scene.movie_name, 
                         'prompt_prefix_caption' : summarize_scene.prompt_prefix_caption, 
                         "scene_top_k": summarize_scene.scene_top_k_frequent,
